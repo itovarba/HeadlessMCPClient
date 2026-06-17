@@ -1,0 +1,32 @@
+{
+  "name": "headless-siri-mcp-client",
+  "version": "1.0.0",
+  "description": "Local Headless 360 MCP client gateway for Siri Shortcuts and Salesforce Hosted MCP Server.",
+  "type": "module",
+  "engines": {
+    "node": ">=26.3.0"
+  },
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc",
+    "start": "node dist/server.js"
+  },
+  "keywords": [
+    "mcp",
+    "salesforce",
+    "siri",
+    "shortcut",
+    "express"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}
