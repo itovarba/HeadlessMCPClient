@@ -149,9 +149,12 @@ export class SalesforceMcpClient {
     if (!response.ok) {
       this.logger?.warn("mcp_http_error", {
         status: response.status,
-        statusText: response.statusText
+        statusText: response.statusText,
+        body: previewText(rawText)
       });
-      throw new Error(`MCP HTTP request failed with status ${response.status}.`);
+      throw new Error(
+        `MCP HTTP request failed with status ${response.status} ${response.statusText}: ${previewText(rawText)}`
+      );
     }
 
     if (!rawText.trim()) {
@@ -163,7 +166,13 @@ export class SalesforceMcpClient {
       return parseEventStreamJsonRpc(rawText);
     }
 
-    const parsed = JSON.parse(rawText) as JsonRpcResponse | JsonValue;
+    let parsed: JsonRpcResponse | JsonValue;
+    try {
+      parsed = JSON.parse(rawText) as JsonRpcResponse | JsonValue;
+    } catch {
+      throw new Error(`MCP response was not valid JSON: ${previewText(rawText)}`);
+    }
+
     if (isJsonRpcResponse(parsed)) {
       return parsed;
     }
@@ -172,6 +181,14 @@ export class SalesforceMcpClient {
       result: parsed
     };
   }
+}
+
+function previewText(text: string): string {
+  const clean = text.replace(/\s+/g, " ").trim();
+  if (!clean) {
+    return "[empty body]";
+  }
+  return clean.length > 500 ? `${clean.slice(0, 497)}...` : clean;
 }
 
 function isJsonRpcResponse(value: JsonValue | JsonRpcResponse): value is JsonRpcResponse {

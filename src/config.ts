@@ -7,14 +7,17 @@ export type LlmProvider = "openai" | "none";
 
 export interface AppConfig {
   port: number;
+  sessionSecret: string;
   salesforce: {
     mcpServerUrl: string;
     authType: SalesforceAuthType;
     clientId?: string;
     clientSecret?: string;
-    refreshToken?: string;
     accessToken?: string;
     tokenUrl?: string;
+    authorizationUrl: string;
+    oauthRedirectUri: string;
+    oauthScopes: string;
   };
   defaultUserId: string;
   llm: {
@@ -88,22 +91,28 @@ function buildConfig(): AppConfig {
 
   const tokenUrl = readOptional("SALESFORCE_TOKEN_URL") ?? "https://login.salesforce.com/services/oauth2/token";
   assertUrl(tokenUrl, "SALESFORCE_TOKEN_URL");
+  const authorizationUrl = readOptional("SALESFORCE_AUTHORIZATION_URL") ?? deriveAuthorizationUrl(tokenUrl);
+  assertUrl(authorizationUrl, "SALESFORCE_AUTHORIZATION_URL");
 
   const accessToken = readOptional("SALESFORCE_ACCESS_TOKEN");
-  const refreshToken = readOptional("SALESFORCE_REFRESH_TOKEN");
   const clientId = readOptional("SALESFORCE_CLIENT_ID");
   const clientSecret = readOptional("SALESFORCE_CLIENT_SECRET");
+  const oauthRedirectUri = readRequired("SALESFORCE_OAUTH_REDIRECT_URI");
+  assertUrl(oauthRedirectUri, "SALESFORCE_OAUTH_REDIRECT_URI");
 
-  if (!accessToken && !(refreshToken && clientId && clientSecret)) {
+  if (!accessToken && !(clientId && clientSecret)) {
     throw new Error(
-      "Salesforce OAuth requires SALESFORCE_ACCESS_TOKEN or SALESFORCE_CLIENT_ID, SALESFORCE_CLIENT_SECRET and SALESFORCE_REFRESH_TOKEN."
+      "Salesforce OAuth requires SALESFORCE_ACCESS_TOKEN or SALESFORCE_CLIENT_ID and SALESFORCE_CLIENT_SECRET for app-managed authorization code flow."
     );
   }
 
   const salesforceConfig: AppConfig["salesforce"] = {
     mcpServerUrl,
     authType: readAuthType(),
-    tokenUrl
+    tokenUrl,
+    authorizationUrl,
+    oauthRedirectUri,
+    oauthScopes: readOptional("SALESFORCE_OAUTH_SCOPES") ?? "api refresh_token"
   };
 
   if (clientId) {
@@ -112,10 +121,6 @@ function buildConfig(): AppConfig {
 
   if (clientSecret) {
     salesforceConfig.clientSecret = clientSecret;
-  }
-
-  if (refreshToken) {
-    salesforceConfig.refreshToken = refreshToken;
   }
 
   if (accessToken) {
@@ -134,11 +139,20 @@ function buildConfig(): AppConfig {
 
   return {
     port: readPort(),
+    sessionSecret: readRequired("SESSION_SECRET"),
     salesforce: salesforceConfig,
     defaultUserId: readOptional("DEFAULT_USER_ID") ?? "iosu.demo",
     llm: llmConfig,
     enableDeterministicFallback: readBoolean("ENABLE_DETERMINISTIC_FALLBACK", true)
   };
+}
+
+function deriveAuthorizationUrl(tokenUrl: string): string {
+  const parsed = new URL(tokenUrl);
+  parsed.pathname = "/services/oauth2/authorize";
+  parsed.search = "";
+  parsed.hash = "";
+  return parsed.toString();
 }
 
 export const config = buildConfig();

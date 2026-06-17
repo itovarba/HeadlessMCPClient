@@ -1,6 +1,15 @@
 import express, { type Request, type Response } from "express";
-import { getSalesforceAccessToken } from "./auth.js";
+import session from "express-session";
+import {
+  AuthRequiredError,
+  clearSalesforceOAuth,
+  createSalesforceAuthorizationUrl,
+  getSalesforceAccessToken,
+  getSalesforceAuthStatus,
+  handleSalesforceOAuthCallback
+} from "./auth.js";
 import { config } from "./config.js";
+import { renderDashboard } from "./dashboard.js";
 import { SalesforceMcpClient } from "./mcpClient.js";
 import { ERROR_SPEECH, formatMcpResponse, UNSUPPORTED_SPEECH } from "./responseFormatter.js";
 import { selectTool } from "./toolSelector.js";
@@ -9,6 +18,20 @@ import type { AskRequest, AskResponse, JsonObject, JsonValue, Logger } from "./t
 const app = express();
 
 app.use(express.json({ limit: "1mb" }));
+app.set("trust proxy", 1);
+app.use(
+  session({
+    name: "headless-siri-mcp.sid",
+    secret: config.sessionSecret,
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: false
+    }
+  })
+);
 
 const logger: Logger = {
   info(message, meta) {
@@ -24,6 +47,122 @@ const logger: Logger = {
 
 app.get("/health", (_request: Request, response: Response) => {
   response.json({ status: "ok" });
+});
+
+app.get("/", (_request: Request, response: Response) => {
+  response.type("html").send(renderDashboard());
+});
+
+app.get("/auth/login", (request: Request, response: Response) => {
+  const userId = readQueryString(request.query.userId) || config.defaultUserId;
+  const authorizationUrl = createSalesforceAuthorizationUrl({
+    appConfig: config,
+    userId,
+    session: request.session
+  });
+
+  logger.info("oauth_login_started", {
+    userId
+  });
+
+  response.redirect(authorizationUrl);
+});
+
+app.get("/auth/callback", async (request: Request, response: Response) => {
+  try {
+    const code = readQueryString(request.query.code);
+    const state = readQueryString(request.query.state);
+
+    if (!code || !state) {
+      response.status(400).type("text/plain").send("Faltan los parámetros code o state de Salesforce OAuth.");
+      return;
+    }
+
+    const result = await handleSalesforceOAuthCallback({
+      appConfig: config,
+      code,
+      state,
+      session: request.session
+    });
+
+    logger.info("oauth_login_completed", {
+      userId: result.userId,
+      expiresAt: new Date(result.expiresAt).toISOString()
+    });
+
+    const labUrl = new URL("/", `${request.protocol}://${request.get("host") ?? `localhost:${config.port}`}`);
+    labUrl.searchParams.set("userId", result.userId);
+    labUrl.searchParams.set("login", "success");
+
+    response.redirect(labUrl.pathname + labUrl.search);
+  } catch (error) {
+    logger.error("oauth_callback_error", {
+      message: error instanceof Error ? error.message : "Unknown OAuth callback error"
+    });
+
+    response.status(400).type("text/plain").send("No se ha podido completar el login con Salesforce.");
+  }
+});
+
+app.get("/auth/status", (request: Request, response: Response) => {
+  const userId = readQueryString(request.query.userId) || request.session.userId || config.defaultUserId;
+  response.json(getSalesforceAuthStatus({ appConfig: config, userId, session: request.session }));
+});
+
+app.post("/auth/logout", (request: Request<unknown, JsonObject, { userId?: string }>, response: Response) => {
+  const userId = request.body.userId?.trim() || request.session.userId || config.defaultUserId;
+  clearSalesforceOAuth({ userId, session: request.session });
+  response.json({
+    status: "ok",
+    userId
+  });
+});
+
+app.get("/mcp/tools", async (request: Request, response: Response) => {
+  const userId = readQueryString(request.query.userId) || request.session.userId || config.defaultUserId;
+
+  try {
+    const mcpClient = await createMcpClient(userId, request.session);
+    await mcpClient.connect();
+    const tools = await mcpClient.listTools();
+
+    logger.info("mcp_tools_discovered", {
+      userId,
+      count: tools.length
+    });
+
+    response.json({
+      count: tools.length,
+      tools: tools.map((tool) => ({
+        name: tool.name,
+        description: tool.description ?? "",
+        inputSchema: tool.inputSchema ?? {},
+        outputSchema: tool.outputSchema ?? {},
+        annotations: tool.annotations ?? {}
+      }))
+    });
+  } catch (error) {
+    if (error instanceof AuthRequiredError) {
+      response.status(401).json({
+        speech: "Necesito que inicies sesión en Salesforce antes de consultar las tools MCP.",
+        intent: "auth_required",
+        raw: {
+          authUrl: buildLocalAuthUrl(request, userId)
+        }
+      });
+      return;
+    }
+
+    logger.error("mcp_tools_error", {
+      message: error instanceof Error ? error.message : "Unknown MCP tools error"
+    });
+
+    response.status(500).json({
+      speech: ERROR_SPEECH,
+      intent: "error",
+      raw: buildErrorDiagnostic(error)
+    });
+  }
 });
 
 app.post("/ask", async (request: Request<unknown, AskResponse, AskRequest>, response: Response<AskResponse>) => {
@@ -46,9 +185,7 @@ app.post("/ask", async (request: Request<unknown, AskResponse, AskRequest>, resp
       question
     });
 
-    const accessToken = await getSalesforceAccessToken(config);
-    const mcpClient = new SalesforceMcpClient(config.salesforce.mcpServerUrl, accessToken, logger);
-
+    const mcpClient = await createMcpClient(userId, request.session);
     await mcpClient.connect();
 
     const tools = await mcpClient.listTools();
@@ -92,6 +229,19 @@ app.post("/ask", async (request: Request<unknown, AskResponse, AskRequest>, resp
       raw
     });
   } catch (error) {
+    if (error instanceof AuthRequiredError) {
+      const userId = request.body.userId?.trim() || config.defaultUserId;
+      response.status(401).json({
+        speech: "Necesito que inicies sesión en Salesforce antes de consultar. Abre la URL de autenticación del servicio.",
+        intent: "auth_required",
+        tool: null,
+        raw: {
+          authUrl: buildLocalAuthUrl(request, userId)
+        }
+      });
+      return;
+    }
+
     logger.error("ask_error", {
       message: error instanceof Error ? error.message : "Unknown error"
     });
@@ -100,7 +250,7 @@ app.post("/ask", async (request: Request<unknown, AskResponse, AskRequest>, resp
       speech: ERROR_SPEECH,
       intent: "error",
       tool: null,
-      raw: {}
+      raw: buildErrorDiagnostic(error)
     });
   }
 });
@@ -110,6 +260,24 @@ app.listen(config.port, () => {
     port: config.port
   });
 });
+
+async function createMcpClient(
+  userId: string,
+  sessionData: Request["session"] | undefined
+): Promise<SalesforceMcpClient> {
+  const authRequest: Parameters<typeof getSalesforceAccessToken>[0] = {
+    appConfig: config,
+    userId
+  };
+
+  if (sessionData) {
+    authRequest.session = sessionData;
+  }
+
+  const accessToken = await getSalesforceAccessToken(authRequest);
+
+  return new SalesforceMcpClient(config.salesforce.mcpServerUrl, accessToken, logger);
+}
 
 function sanitizeForLog(value: JsonValue | undefined): JsonObject {
   if (value === undefined) {
@@ -170,4 +338,32 @@ function isSecretKey(key: string): boolean {
 
 function isJsonObject(value: JsonValue): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function buildErrorDiagnostic(error: unknown): JsonObject {
+  const message = error instanceof Error ? error.message : "Unknown error";
+  return {
+    error: sanitizeErrorMessage(message)
+  };
+}
+
+function sanitizeErrorMessage(message: string): string {
+  return message.replace(/Bearer\s+[A-Za-z0-9._~+/-]+=*/gi, "Bearer [REDACTED]");
+}
+
+function readQueryString(value: unknown): string | undefined {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed || undefined;
+  }
+
+  return undefined;
+}
+
+function buildLocalAuthUrl(request: { protocol: string; get(name: string): string | undefined }, userId: string): string {
+  const protocol = request.protocol;
+  const host = request.get("host") ?? `localhost:${config.port}`;
+  const url = new URL(`${protocol}://${host}/auth/login`);
+  url.searchParams.set("userId", userId);
+  return url.toString();
 }

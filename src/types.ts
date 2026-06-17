@@ -31,8 +31,32 @@ export interface ToolSelection {
   toolInput: JsonObject;
 }
 
+export interface SalesforceOAuthSession {
+  accessToken: string;
+  refreshToken?: string;
+  expiresAt: number;
+  instanceUrl?: string;
+  issuedAt?: string;
+  tokenType?: string;
+}
+
+export interface OAuthLoginState {
+  state: string;
+  userId: string;
+  codeVerifier: string;
+  expiresAt: number;
+}
+
 export interface Logger {
   info(message: string, meta?: JsonObject): void;
   warn(message: string, meta?: JsonObject): void;
   error(message: string, meta?: JsonObject): void;
+}
+
+declare module "express-session" {
+  interface SessionData {
+    salesforceOAuth?: SalesforceOAuthSession;
+    oauthLoginState?: OAuthLoginState;
+    userId?: string;
+  }
 }

@@ -9,7 +9,7 @@ It does not hardcode Salesforce tool names or business capabilities. Tool select
 - Node.js 26.3 or newer
 - npm
 - Salesforce Hosted MCP Server URL
-- Salesforce OAuth access token or refresh-token credentials
+- Salesforce Connected App or External Client App with OAuth enabled
 
 ## Installation
 
@@ -22,13 +22,16 @@ Edit `.env`:
 
 ```bash
 PORT=3000
+SESSION_SECRET=replace-with-a-long-random-string
 SALESFORCE_MCP_SERVER_URL=https://your-domain.my.salesforce.com/services/mcp
 SALESFORCE_AUTH_TYPE=oauth
 SALESFORCE_CLIENT_ID=
 SALESFORCE_CLIENT_SECRET=
-SALESFORCE_REFRESH_TOKEN=
-SALESFORCE_ACCESS_TOKEN=
 SALESFORCE_TOKEN_URL=https://login.salesforce.com/services/oauth2/token
+SALESFORCE_AUTHORIZATION_URL=https://login.salesforce.com/services/oauth2/authorize
+SALESFORCE_OAUTH_REDIRECT_URI=http://localhost:3000/auth/callback
+SALESFORCE_OAUTH_SCOPES=api refresh_token
+SALESFORCE_ACCESS_TOKEN=
 DEFAULT_USER_ID=iosu.demo
 
 LLM_PROVIDER=openai
@@ -38,9 +41,60 @@ OPENAI_MODEL=gpt-4.1-mini
 ENABLE_DETERMINISTIC_FALLBACK=true
 ```
 
-The app fails fast if mandatory Salesforce MCP or OAuth variables are missing. You can use either `SALESFORCE_ACCESS_TOKEN` or the refresh token flow with `SALESFORCE_CLIENT_ID`, `SALESFORCE_CLIENT_SECRET`, `SALESFORCE_REFRESH_TOKEN`, and `SALESFORCE_TOKEN_URL`.
+The app fails fast if mandatory Salesforce MCP, session, or OAuth variables are missing. In normal use, do not paste a refresh token into `.env`. The app obtains the authorization code, access token, and refresh token through OAuth, then keeps the token session in server memory for the configured `userId`.
 
 `SALESFORCE_TOKEN_URL` can point to `login.salesforce.com`, `test.salesforce.com`, or a custom Salesforce domain.
+
+`SALESFORCE_ACCESS_TOKEN` is only a development bypass. If it is set, the app uses it directly and skips the login flow. Leave it empty for app-managed OAuth.
+
+## Salesforce OAuth Setup
+
+Create a Salesforce Connected App or External Client App with OAuth enabled.
+
+The app supports OAuth Authorization Code Flow with PKCE. If Salesforce requires PKCE, keep that setting enabled; `/auth/login` sends a `code_challenge` with method `S256`, and `/auth/callback` sends the matching `code_verifier`.
+
+Recommended OAuth scopes:
+
+```text
+api
+refresh_token
+```
+
+Callback URL for local development:
+
+```text
+http://localhost:3000/auth/callback
+```
+
+For ngrok or another public demo URL, set both the Salesforce callback URL and `.env` value to the same URL, for example:
+
+```text
+https://your-ngrok-domain.ngrok-free.app/auth/callback
+```
+
+After starting the app, open this URL in a browser:
+
+```text
+http://localhost:3000/auth/login?userId=iosu.demo
+```
+
+Salesforce redirects back to `/auth/callback`. The app exchanges the code for tokens and stores them in the server session store. Tokens are never logged and are not written to `.env`.
+
+Check auth status:
+
+```bash
+curl "http://localhost:3000/auth/status?userId=iosu.demo"
+```
+
+Log out and clear the in-memory token session:
+
+```bash
+curl -X POST http://localhost:3000/auth/logout \
+  -H "Content-Type: application/json" \
+  -d '{"userId":"iosu.demo"}'
+```
+
+This implementation uses in-memory token storage. Restarting the Node process clears the session and requires login again. For production, replace it with an encrypted database, OS keychain, or secret manager.
 
 ## Running Locally
 
@@ -61,15 +115,24 @@ Health check:
 curl http://localhost:3000/health
 ```
 
+Browser test UI:
+
+```text
+http://localhost:3000/
+```
+
+The UI includes OAuth status, a `userId` field, a text box for test questions, a button to call `/ask`, and a button to discover the current MCP tools.
+
 Ask endpoint:
 
 ```bash
-curl -X POST http://localhost:3000/ask \
-  -H "Content-Type: application/json" \
-  -d '{
-    "userId": "iosu.demo",
-    "question": "¿Qué clientes debo priorizar hoy?"
-  }'
+curl -X POST http://localhost:3000/ask -H "Content-Type: application/json" -d '{"userId":"iosu.demo","question":"¿Qué clientes debo priorizar hoy?"}'
+```
+
+Discover MCP tools:
+
+```bash
+curl "http://localhost:3000/mcp/tools?userId=iosu.demo"
 ```
 
 Response shape:
@@ -82,6 +145,8 @@ Response shape:
   "raw": {}
 }
 ```
+
+If `/ask` is called before login, the response has `intent: "auth_required"` and includes a local `authUrl` in `raw`.
 
 ## Siri Shortcut
 
@@ -151,7 +216,7 @@ speech
 `POST /ask` performs this flow:
 
 1. Reads `question` and `userId`.
-2. Gets a Salesforce access token.
+2. Gets a Salesforce access token from the app-managed OAuth session, refreshing it when needed.
 3. Connects to the Salesforce Hosted MCP Server.
 4. Calls `listTools()`.
 5. Builds a selection prompt from the user question, user id, current date, and available MCP tools.
@@ -197,6 +262,7 @@ Tokens, refresh tokens, client secrets, passwords, and API keys are redacted fro
 - Do not expose the local endpoint publicly without authentication.
 - Use ngrok only for controlled demos.
 - Never commit `.env`.
+- Do not paste refresh tokens into `.env`; let the app obtain them through OAuth.
 - Use HTTPS in real environments.
 - Use least-privilege Salesforce credentials.
 - Avoid returning sensitive customer information in voice responses.
@@ -204,7 +270,10 @@ Tokens, refresh tokens, client secrets, passwords, and API keys are redacted fro
 ## Troubleshooting
 
 - `Missing mandatory environment variable`: check `.env` and make sure the Salesforce MCP URL and OAuth configuration are present.
-- `Salesforce OAuth refresh failed`: verify connected app settings, refresh token validity, client id, client secret, and token URL.
+- `auth_required`: open `/auth/login?userId=iosu.demo` in a browser and complete Salesforce login.
+- `Invalid or expired Salesforce OAuth state`: restart login from `/auth/login`; OAuth state expires after 10 minutes.
+- `missing required code challenge`: use the latest code in this project and restart the Node process. The OAuth flow sends PKCE parameters automatically.
+- `Salesforce OAuth refresh failed`: verify connected app settings, OAuth scopes, client id, client secret, and token URL.
 - `MCP HTTP request failed`: verify `SALESFORCE_MCP_SERVER_URL`, network access, bearer token scope, and Salesforce Hosted MCP availability.
 - `MCP tools/list response did not include a tools array`: the server may use a different transport shape. Review `src/mcpClient.ts`.
 - Siri cannot reach the Mac: confirm both devices are on the same Wi-Fi, use the Mac LAN IP, disable blocking firewall rules, or use ngrok/Tailscale.
