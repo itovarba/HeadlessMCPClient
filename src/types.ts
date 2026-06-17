@@ -38,6 +38,7 @@ export interface SalesforceOAuthSession {
   instanceUrl?: string;
   issuedAt?: string;
   tokenType?: string;
+  scope?: string;
 }
 
 export interface OAuthLoginState {

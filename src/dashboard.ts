@@ -142,11 +142,13 @@ export function renderDashboard(): string {
         border: 1px solid var(--line);
         border-radius: 8px;
         padding: 16px;
+        min-width: 0;
       }
 
       .stack {
         display: grid;
         gap: 14px;
+        min-width: 0;
       }
 
       .row {
@@ -236,6 +238,7 @@ export function renderDashboard(): string {
         border-radius: 8px;
         padding: 12px;
         background: #fff;
+        min-width: 0;
       }
 
       .tool summary {
@@ -254,16 +257,81 @@ export function renderDashboard(): string {
         line-height: 1.4;
       }
 
-      pre {
+      .json-block {
+        display: block;
+        width: 100%;
+        min-width: 0;
         margin: 10px 0 0;
-        max-height: 320px;
+        max-height: min(46vh, 420px);
         overflow: auto;
+        overscroll-behavior: contain;
         border-radius: 6px;
         background: var(--code);
         color: #e6edf3;
         padding: 12px;
         font-size: 12px;
         line-height: 1.45;
+        white-space: pre;
+        overflow-wrap: normal;
+        tab-size: 2;
+      }
+
+      .raw-panel {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        overflow: hidden;
+        background: #fff;
+        min-width: 0;
+      }
+
+      .raw-summary {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--line);
+        background: #fbfcfe;
+        cursor: pointer;
+        font-weight: 700;
+      }
+
+      .raw-toolbar {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 10px;
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--line);
+        background: #fbfcfe;
+      }
+
+      .raw-header-actions {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .copy-feedback {
+        min-width: 58px;
+        color: var(--muted);
+        font-size: 12px;
+        text-align: right;
+      }
+
+      .icon-button {
+        min-height: 32px;
+        padding: 6px 10px;
+        border-radius: 6px;
+        font-size: 13px;
+      }
+
+      .raw-body {
+        padding: 0 12px 12px;
+        min-width: 0;
+      }
+
+      .raw-body .json-block {
+        margin-top: 12px;
       }
 
       .muted {
@@ -285,6 +353,19 @@ export function renderDashboard(): string {
         .meta {
           grid-template-columns: 1fr;
         }
+
+        .raw-toolbar {
+          flex-wrap: wrap;
+          justify-content: flex-start;
+        }
+
+        .raw-panel summary {
+          width: 100%;
+        }
+
+        .json-block {
+          max-height: min(52vh, 360px);
+        }
       }
     </style>
   </head>
@@ -298,6 +379,7 @@ export function renderDashboard(): string {
         <div class="row">
           <span id="authStatus" class="status">Comprobando sesión</span>
           <button id="loginButton" class="secondary" type="button">Login Salesforce</button>
+          <button id="logoutButton" class="secondary" type="button">Logout</button>
         </div>
       </header>
 
@@ -333,9 +415,17 @@ export function renderDashboard(): string {
                 <strong id="selectedTool">-</strong>
               </div>
             </div>
-            <details>
-              <summary>raw</summary>
-              <pre id="raw">{}</pre>
+            <details class="raw-panel" open>
+              <summary class="raw-summary">raw</summary>
+              <div class="raw-toolbar">
+                <div class="raw-header-actions">
+                  <span id="copyRawFeedback" class="copy-feedback"></span>
+                  <button id="copyRawButton" class="secondary icon-button" type="button">Copiar raw</button>
+                </div>
+              </div>
+              <div class="raw-body">
+                <pre id="raw" class="json-block">{}</pre>
+              </div>
             </details>
           </section>
         </div>
@@ -358,6 +448,7 @@ export function renderDashboard(): string {
       const question = document.querySelector("#question");
       const authStatus = document.querySelector("#authStatus");
       const loginButton = document.querySelector("#loginButton");
+      const logoutButton = document.querySelector("#logoutButton");
       const askButton = document.querySelector("#askButton");
       const toolsButton = document.querySelector("#toolsButton");
       const busy = document.querySelector("#busy");
@@ -365,6 +456,8 @@ export function renderDashboard(): string {
       const intent = document.querySelector("#intent");
       const selectedTool = document.querySelector("#selectedTool");
       const raw = document.querySelector("#raw");
+      const copyRawButton = document.querySelector("#copyRawButton");
+      const copyRawFeedback = document.querySelector("#copyRawFeedback");
       const tools = document.querySelector("#tools");
       const toolCount = document.querySelector("#toolCount");
       const params = new URLSearchParams(window.location.search);
@@ -384,8 +477,10 @@ export function renderDashboard(): string {
         window.location.href = "/auth/login?userId=" + encodeURIComponent(currentUserId());
       });
 
+      logoutButton.addEventListener("click", logout);
       askButton.addEventListener("click", ask);
       toolsButton.addEventListener("click", loadTools);
+      copyRawButton.addEventListener("click", copyRaw);
       userId.addEventListener("change", refreshStatus);
 
       refreshStatus();
@@ -399,8 +494,36 @@ export function renderDashboard(): string {
         const payload = await response.json();
         if (payload.authenticated) {
           setStatus(authStatus, "Conectado", "ok");
+          authStatus.title = [
+            payload.instanceUrl ? "instanceUrl: " + payload.instanceUrl : "",
+            payload.scope ? "scope: " + payload.scope : "",
+            payload.expiresAt ? "expiresAt: " + payload.expiresAt : ""
+          ].filter(Boolean).join("\\n");
         } else {
           setStatus(authStatus, "Sin login", "warn");
+          authStatus.title = "";
+        }
+      }
+
+      async function logout() {
+        setBusy("Cerrando sesión");
+        logoutButton.disabled = true;
+        try {
+          await fetch("/auth/logout", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ userId: currentUserId() })
+          });
+          setStatus(authStatus, "Sin login", "warn");
+          authStatus.title = "";
+          speech.textContent = "Sesión OAuth cerrada. Vuelve a hacer login para obtener un token nuevo.";
+          speech.classList.remove("muted");
+          intent.textContent = "-";
+          selectedTool.textContent = "-";
+          raw.textContent = "{}";
+        } finally {
+          logoutButton.disabled = false;
+          setBusy("");
         }
       }
 
@@ -501,6 +624,7 @@ export function renderDashboard(): string {
           details.appendChild(description);
 
           const schema = document.createElement("pre");
+          schema.className = "json-block";
           schema.textContent = JSON.stringify({
             inputSchema: item.inputSchema || {},
             outputSchema: item.outputSchema || {},
@@ -518,6 +642,29 @@ export function renderDashboard(): string {
       function setStatus(element, text, kind) {
         element.textContent = text;
         element.className = "status" + (kind ? " " + kind : "");
+      }
+
+      async function copyRaw() {
+        const text = raw.textContent || "{}";
+        try {
+          await navigator.clipboard.writeText(text);
+          showCopyFeedback("Copiado");
+        } catch {
+          const selection = window.getSelection();
+          const range = document.createRange();
+          range.selectNodeContents(raw);
+          selection.removeAllRanges();
+          selection.addRange(range);
+          showCopyFeedback("Seleccionado");
+        }
+      }
+
+      function showCopyFeedback(text) {
+        copyRawFeedback.textContent = text;
+        window.clearTimeout(showCopyFeedback.timeoutId);
+        showCopyFeedback.timeoutId = window.setTimeout(() => {
+          copyRawFeedback.textContent = "";
+        }, 1800);
       }
     </script>
   </body>

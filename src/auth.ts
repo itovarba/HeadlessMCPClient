@@ -10,6 +10,7 @@ interface SalesforceTokenResponse {
   expires_in?: number;
   issued_at?: string;
   instance_url?: string;
+  scope?: string;
   error?: string;
   error_description?: string;
 }
@@ -152,7 +153,9 @@ export function getSalesforceAuthStatus(params: {
     mode: "oauth_session",
     userId,
     expiresAt: new Date(token.expiresAt).toISOString(),
-    hasRefreshToken: Boolean(token.refreshToken)
+    hasRefreshToken: Boolean(token.refreshToken),
+    instanceUrl: token.instanceUrl ?? "",
+    scope: token.scope ?? ""
   };
 }
 
@@ -281,6 +284,9 @@ async function requestToken(
   }
   if (payload.token_type) {
     token.tokenType = payload.token_type;
+  }
+  if (payload.scope) {
+    token.scope = payload.scope;
   }
   return token;
 }
