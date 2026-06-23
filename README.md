@@ -32,7 +32,7 @@ SALESFORCE_AUTHORIZATION_URL=https://login.salesforce.com/services/oauth2/author
 SALESFORCE_OAUTH_REDIRECT_URI=http://localhost:3000/auth/callback
 SALESFORCE_OAUTH_SCOPES=refresh_token mcp_api
 SALESFORCE_ACCESS_TOKEN=
-DEFAULT_USER_ID=iosu.demo
+DEFAULT_USER_ID=user.demo
 
 LLM_PROVIDER=openai
 OPENAI_API_KEY=
@@ -47,15 +47,59 @@ The app fails fast if mandatory Salesforce MCP, session, or OAuth variables are 
 
 `SALESFORCE_ACCESS_TOKEN` is only a development bypass. If it is set, the app uses it directly and skips the login flow. Leave it empty for app-managed OAuth.
 
-## Salesforce OAuth Setup
+## Salesforce Setup Guide
 
-Create a Salesforce Connected App or External Client App with OAuth enabled.
+This proxy needs two Salesforce-side pieces:
 
-The app supports OAuth Authorization Code Flow with PKCE. If Salesforce requires PKCE, keep that setting enabled; `/auth/login` sends a `code_challenge` with method `S256`, and `/auth/callback` sends the matching `code_verifier`.
+- A Salesforce Hosted MCP Server that exposes tools.
+- An External Client App that can issue tokens accepted by hosted MCP servers.
 
-OAuth settings matching the Copilot Studio external app:
+Salesforce setup labels can vary by release and org feature set. The important output is always the same: a hosted MCP server URL and an OAuth client ID authorized for `mcp_api`.
+
+### 1. Create or Configure a Hosted MCP Server
+
+In Salesforce Setup, open the area for Agentforce, Einstein, or Model Context Protocol configuration and create a hosted MCP server.
+
+Recommended setup:
+
+1. Create a hosted/custom MCP server.
+2. Give it a stable API-style name, for example `MCPServerLab`.
+3. Add only the tools you want this proxy to expose. Typical tools include:
+   - SOQL/read tools, such as querying records.
+   - User context tools, such as current user info.
+   - Flow actions, such as a Flow that searches Enterprise Knowledge.
+   - Create/update tools only if this proxy should perform write actions.
+4. Publish or activate the MCP server.
+5. Copy the server URL. It usually looks similar to:
 
 ```text
+https://api.salesforce.com/platform/mcp/v1/custom/MCPServerLab
+```
+
+Set it in `.env`:
+
+```env
+SALESFORCE_MCP_SERVER_URL=https://api.salesforce.com/platform/mcp/v1/custom/MCPServerLab
+```
+
+Validation target:
+
+```bash
+curl "http://localhost:3000/mcp/tools?userId=user.demo"
+```
+
+If the proxy is authenticated correctly, this endpoint returns the tools discovered from Salesforce. The proxy never hardcodes tool names; it uses `tools/list` dynamically.
+
+### 2. Create the External Client App
+
+In Salesforce Setup, create an External Client App for this proxy.
+
+Use these OAuth settings, matching the configuration proven with the Copilot Studio external app:
+
+```text
+Callback URL:
+http://localhost:3000/auth/callback
+
 Selected OAuth Scopes:
 - Perform requests at any time (refresh_token, offline_access)
 - Access Salesforce hosted MCP servers (mcp_api)
@@ -68,33 +112,70 @@ Security:
 - Issue JSON Web Token (JWT)-based access tokens for named users
 - Require secret for Web Server Flow: disabled
 - Require secret for Refresh Token Flow: disabled
+- Enable Refresh Token Rotation: optional; disabled is simplest for local testing
 ```
 
-In `.env`, this maps to:
+Do not confuse **JWT-based access tokens for named users** with the **OAuth JWT Bearer Flow**. This proxy uses Authorization Code with PKCE; Salesforce issues the access token format accepted by hosted MCP servers when that named-user JWT access token setting is enabled.
 
-```env
-SALESFORCE_OAUTH_SCOPES=refresh_token mcp_api
-SALESFORCE_CLIENT_SECRET=
-```
-
-`SALESFORCE_CLIENT_SECRET` is optional. Leave it empty when your Salesforce External Client App does not require a secret for the web server or refresh token flow.
-
-Callback URL for local development:
-
-```text
-http://localhost:3000/auth/callback
-```
-
-For ngrok or another public demo URL, set both the Salesforce callback URL and `.env` value to the same URL, for example:
+For ngrok or a remote demo URL, the callback URL must match exactly in both Salesforce and `.env`:
 
 ```text
 https://your-ngrok-domain.ngrok-free.app/auth/callback
 ```
 
-After starting the app, open this URL in a browser:
+After saving the app, copy the consumer key or client ID. If your External Client App does not require a secret, leave `SALESFORCE_CLIENT_SECRET` empty.
+
+```env
+SALESFORCE_AUTH_TYPE=oauth
+SALESFORCE_CLIENT_ID=your_consumer_key
+SALESFORCE_CLIENT_SECRET=
+SALESFORCE_OAUTH_REDIRECT_URI=http://localhost:3000/auth/callback
+SALESFORCE_OAUTH_SCOPES=refresh_token mcp_api
+```
+
+Make sure the Salesforce user who logs in is allowed to use the External Client App and has access to the MCP server, Flow actions, objects, and fields exposed by the MCP tools.
+
+### 3. Configure Token URLs
+
+Use production login unless you are targeting a sandbox or custom domain:
+
+```env
+SALESFORCE_TOKEN_URL=https://login.salesforce.com/services/oauth2/token
+SALESFORCE_AUTHORIZATION_URL=https://login.salesforce.com/services/oauth2/authorize
+```
+
+For sandbox:
+
+```env
+SALESFORCE_TOKEN_URL=https://test.salesforce.com/services/oauth2/token
+SALESFORCE_AUTHORIZATION_URL=https://test.salesforce.com/services/oauth2/authorize
+```
+
+For a custom domain:
+
+```env
+SALESFORCE_TOKEN_URL=https://your-domain.my.salesforce.com/services/oauth2/token
+SALESFORCE_AUTHORIZATION_URL=https://your-domain.my.salesforce.com/services/oauth2/authorize
+```
+
+### 4. First Login and Validation
+
+Start the proxy:
+
+```bash
+npm run dev
+```
+
+Open the lab:
 
 ```text
-http://localhost:3000/auth/login?userId=iosu.demo
+http://localhost:3000/
+```
+
+Click **Login Salesforce**, or open:
+
+```text
+http://localhost:3000/auth/login?userId=user.demo
 ```
 
 Salesforce redirects back to `/auth/callback`. The app exchanges the code for tokens and stores them in the server session store. Tokens are never logged and are not written to `.env`.
@@ -102,7 +183,25 @@ Salesforce redirects back to `/auth/callback`. The app exchanges the code for to
 Check auth status:
 
 ```bash
-curl "http://localhost:3000/auth/status?userId=iosu.demo"
+curl "http://localhost:3000/auth/status?userId=user.demo"
+```
+
+Expected:
+
+```json
+{
+  "authenticated": true,
+  "mode": "oauth_session",
+  "scope": "refresh_token mcp_api"
+}
+```
+
+The scope order can vary. The important part is that `mcp_api` is present.
+
+Then discover tools:
+
+```bash
+curl "http://localhost:3000/mcp/tools?userId=user.demo"
 ```
 
 Log out and clear the in-memory token session:
@@ -110,7 +209,7 @@ Log out and clear the in-memory token session:
 ```bash
 curl -X POST http://localhost:3000/auth/logout \
   -H "Content-Type: application/json" \
-  -d '{"userId":"iosu.demo"}'
+  -d '{"userId":"user.demo"}'
 ```
 
 This implementation uses in-memory token storage. Restarting the Node process clears the session and requires login again. For production, replace it with an encrypted database, OS keychain, or secret manager.
@@ -145,13 +244,13 @@ The UI includes OAuth status, a `userId` field, a text box for test questions, a
 Ask endpoint:
 
 ```bash
-curl -X POST http://localhost:3000/ask -H "Content-Type: application/json" -d '{"userId":"iosu.demo","question":"¿Qué clientes debo priorizar hoy?"}'
+curl -X POST http://localhost:3000/ask -H "Content-Type: application/json" -d '{"userId":"user.demo","question":"¿Qué clientes debo priorizar hoy?"}'
 ```
 
 Discover MCP tools:
 
 ```bash
-curl "http://localhost:3000/mcp/tools?userId=iosu.demo"
+curl "http://localhost:3000/mcp/tools?userId=user.demo"
 ```
 
 Response shape:
@@ -232,10 +331,17 @@ Tokens, refresh tokens, client secrets, passwords, and API keys are redacted fro
 ## Troubleshooting
 
 - `Missing mandatory environment variable`: check `.env` and make sure the Salesforce MCP URL and OAuth configuration are present.
-- `auth_required`: open `/auth/login?userId=iosu.demo` in a browser and complete Salesforce login.
+- `auth_required`: open `/auth/login?userId=user.demo` in a browser and complete Salesforce login.
 - `Invalid or expired Salesforce OAuth state`: restart login from `/auth/login`; OAuth state expires after 10 minutes.
 - `missing required code challenge`: use the latest code in this project and restart the Node process. The OAuth flow sends PKCE parameters automatically.
 - `Salesforce OAuth refresh failed`: verify connected app settings, OAuth scopes, client id, client secret, and token URL.
 - `MCP HTTP request failed`: verify `SALESFORCE_MCP_SERVER_URL`, network access, bearer token scope, and Salesforce Hosted MCP availability.
+- `Invalid token`: confirm the token status includes `mcp_api`, the External Client App has **Issue JSON Web Token (JWT)-based access tokens for named users** enabled, and the MCP server URL is the one copied from Salesforce.
 - `MCP tools/list response did not include a tools array`: the server may use a different transport shape. Review `src/mcpClient.ts`.
 - Client cannot reach the proxy: confirm it can access the Mac local IP, disable blocking firewall rules, or use ngrok/Tailscale for controlled demos.
+
+## References
+
+- Salesforce OAuth Web Server Flow: https://help.salesforce.com/s/articleView?id=sf.remoteaccess_oauth_web_server_flow.htm&type=5
+- Salesforce OAuth Refresh Token Flow: https://help.salesforce.com/s/articleView?id=sf.remoteaccess_oauth_refresh_token_flow.htm&type=5
+- Salesforce OAuth JWT Bearer Flow, for comparison only: https://help.salesforce.com/s/articleView?id=sf.remoteaccess_oauth_jwt_flow.htm&type=5
