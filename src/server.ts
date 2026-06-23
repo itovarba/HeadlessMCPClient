@@ -217,6 +217,11 @@ app.post("/ask", async (request: Request<unknown, AskResponse, AskRequest>, resp
       return;
     }
 
+    logger.info("tool_input_built", {
+      tool: selection.toolName,
+      input: sanitizeForLog(selection.toolInput)
+    });
+
     const raw = await mcpClient.callTool(selection.toolName, selection.toolInput);
     logger.info("mcp_execution_result", {
       result: sanitizeForLog(raw)

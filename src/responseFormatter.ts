@@ -33,6 +33,10 @@ export function formatMcpResponse(raw: JsonValue): string {
 
 function findNaturalLanguageAnswer(value: JsonValue): string | undefined {
   if (typeof value === "string") {
+    const parsed = tryParseJson(value);
+    if (parsed !== undefined && typeof parsed !== "string") {
+      return findNaturalLanguageAnswer(parsed);
+    }
     return value;
   }
 
@@ -56,12 +60,23 @@ function findNaturalLanguageAnswer(value: JsonValue): string | undefined {
     if (typeof item === "string" && item.trim()) {
       return item;
     }
+    if (item !== undefined && typeof item !== "string") {
+      const nested = findNaturalLanguageAnswer(item);
+      if (nested) {
+        return nested;
+      }
+    }
   }
 
   return undefined;
 }
 
 function summarizeArray(items: JsonValue[]): string {
+  const flattened = flattenSingleNestedArrays(items);
+  if (flattened !== items) {
+    return summarizeArray(flattened);
+  }
+
   if (items.length === 0) {
     return "No he encontrado resultados relevantes.";
   }
@@ -79,6 +94,13 @@ function summarizeArray(items: JsonValue[]): string {
 function summarizeObject(object: JsonObject): string {
   if (looksLikeMutationResult(object)) {
     return "He completado la acción en Salesforce.";
+  }
+
+  if (Array.isArray(object.records)) {
+    if (object.records.length === 0) {
+      return "No he encontrado registros.";
+    }
+    return summarizeArray(object.records);
   }
 
   const entries = Object.entries(object).filter(([, value]) => isDisplayPrimitive(value)).slice(0, 4);
@@ -99,7 +121,28 @@ function summarizeBriefItem(item: JsonValue): string {
     return String(item);
   }
 
-  const preferredKeys = ["name", "nombre", "accountName", "cliente", "title", "subject", "stage", "status", "amount"];
+  const preferredKeys = [
+    "Name",
+    "name",
+    "nombre",
+    "AccountName",
+    "accountName",
+    "cliente",
+    "Subject",
+    "subject",
+    "CaseNumber",
+    "caseNumber",
+    "StageName",
+    "stage",
+    "Status",
+    "status",
+    "Priority",
+    "priority",
+    "Amount",
+    "amount",
+    "ActivityDate",
+    "CloseDate"
+  ];
   const selected = preferredKeys
     .filter((key) => item[key] !== undefined && isDisplayPrimitive(item[key]))
     .slice(0, 3)
@@ -119,8 +162,15 @@ function summarizeBriefItem(item: JsonValue): string {
 function looksLikeMutationResult(object: JsonObject): boolean {
   const keys = Object.keys(object).map((key) => key.toLowerCase());
   return keys.some((key) =>
-    ["created", "updated", "success", "id", "recordid", "record_id"].some((candidate) => key.includes(candidate))
+    ["created", "updated", "deleted", "success"].some((candidate) => key.includes(candidate))
   );
+}
+
+function flattenSingleNestedArrays(items: JsonValue[]): JsonValue[] {
+  if (items.length === 1 && Array.isArray(items[0])) {
+    return flattenSingleNestedArrays(items[0]);
+  }
+  return items;
 }
 
 function isDisplayPrimitive(value: JsonValue | undefined): value is string | number | boolean {
@@ -146,4 +196,12 @@ function shortenSpeech(text: string): string {
 
 function isJsonObject(value: JsonValue): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function tryParseJson(text: string): JsonValue | undefined {
+  try {
+    return JSON.parse(text) as JsonValue;
+  } catch {
+    return undefined;
+  }
 }
