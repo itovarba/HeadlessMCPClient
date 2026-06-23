@@ -1,7 +1,7 @@
 {
-  "name": "headless-siri-mcp-client",
+  "name": "local-salesforce-mcp-proxy",
   "version": "1.0.0",
-  "description": "Local Headless 360 MCP client gateway for Siri Shortcuts and Salesforce Hosted MCP Server.",
+  "description": "Local Headless 360 MCP proxy for Salesforce Hosted MCP Server.",
   "type": "module",
   "engines": {
     "node": ">=26.3.0"
@@ -14,8 +14,8 @@
   "keywords": [
     "mcp",
     "salesforce",
-    "siri",
-    "shortcut",
+    "proxy",
+    "gateway",
     "express"
   ],
   "license": "MIT",

@@ -45,7 +45,7 @@ export class SalesforceMcpClient {
       protocolVersion: MCP_PROTOCOL_VERSION,
       capabilities: {},
       clientInfo: {
-        name: "headless-siri-mcp-client",
+        name: "local-salesforce-mcp-proxy",
         version: "1.0.0"
       }
     });

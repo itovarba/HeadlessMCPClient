@@ -100,9 +100,9 @@ function buildConfig(): AppConfig {
   const oauthRedirectUri = readRequired("SALESFORCE_OAUTH_REDIRECT_URI");
   assertUrl(oauthRedirectUri, "SALESFORCE_OAUTH_REDIRECT_URI");
 
-  if (!accessToken && !(clientId && clientSecret)) {
+  if (!accessToken && !clientId) {
     throw new Error(
-      "Salesforce OAuth requires SALESFORCE_ACCESS_TOKEN or SALESFORCE_CLIENT_ID and SALESFORCE_CLIENT_SECRET for app-managed authorization code flow."
+      "Salesforce OAuth requires SALESFORCE_ACCESS_TOKEN or SALESFORCE_CLIENT_ID for app-managed authorization code flow with PKCE."
     );
   }
 
@@ -112,7 +112,7 @@ function buildConfig(): AppConfig {
     tokenUrl,
     authorizationUrl,
     oauthRedirectUri,
-    oauthScopes: readOptional("SALESFORCE_OAUTH_SCOPES") ?? "api refresh_token"
+    oauthScopes: readOptional("SALESFORCE_OAUTH_SCOPES") ?? "refresh_token mcp_api"
   };
 
   if (clientId) {

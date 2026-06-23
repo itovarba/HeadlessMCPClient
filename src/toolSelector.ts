@@ -4,7 +4,7 @@ import type { JsonObject, JsonValue, Logger, McpTool, ToolSelection } from "./ty
 const TOOL_SELECTOR_SYSTEM_PROMPT = `You are a dynamic MCP tool selection layer for a Headless 360 assistant.
 
 You receive:
-- a user question from Siri
+- a user question from a local MCP proxy client
 - the current user id
 - the current date
 - a list of MCP tools exposed by the connected MCP server

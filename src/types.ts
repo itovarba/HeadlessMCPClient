@@ -11,7 +11,7 @@ export interface AskRequest {
 }
 
 export interface AskResponse {
-  speech: string;
+  answer: string;
   intent: string;
   tool: string | null;
   raw: JsonValue;

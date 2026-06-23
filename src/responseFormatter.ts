@@ -1,9 +1,9 @@
 import type { JsonObject, JsonValue } from "./types.js";
 
-export const UNSUPPORTED_SPEECH =
+export const UNSUPPORTED_ANSWER =
   "No he entendido la petición. Puedes pedirme que consulte información disponible en Salesforce o que ejecute una acción habilitada por el MCP Server.";
 
-export const ERROR_SPEECH =
+export const ERROR_ANSWER =
   "Ha ocurrido un error consultando el asistente comercial. Revisa la conexión con Salesforce.";
 
 export function formatMcpResponse(raw: JsonValue): string {
@@ -50,7 +50,7 @@ function findNaturalLanguageAnswer(value: JsonValue): string | undefined {
     return undefined;
   }
 
-  const preferredKeys = ["speech", "answer", "summary", "message", "text", "response", "result"];
+  const preferredKeys = ["answer", "summary", "message", "text", "response", "result"];
   for (const key of preferredKeys) {
     const item = value[key];
     if (typeof item === "string" && item.trim()) {
@@ -81,7 +81,7 @@ function summarizeObject(object: JsonObject): string {
     return "He completado la acción en Salesforce.";
   }
 
-  const entries = Object.entries(object).filter(([, value]) => isSpeakablePrimitive(value)).slice(0, 4);
+  const entries = Object.entries(object).filter(([, value]) => isDisplayPrimitive(value)).slice(0, 4);
   if (entries.length === 0) {
     return "He recibido la respuesta de Salesforce, pero no hay un resumen claro para leer.";
   }
@@ -101,7 +101,7 @@ function summarizeBriefItem(item: JsonValue): string {
 
   const preferredKeys = ["name", "nombre", "accountName", "cliente", "title", "subject", "stage", "status", "amount"];
   const selected = preferredKeys
-    .filter((key) => item[key] !== undefined && isSpeakablePrimitive(item[key]))
+    .filter((key) => item[key] !== undefined && isDisplayPrimitive(item[key]))
     .slice(0, 3)
     .map((key) => String(item[key]));
 
@@ -110,7 +110,7 @@ function summarizeBriefItem(item: JsonValue): string {
   }
 
   return Object.entries(item)
-    .filter(([, value]) => isSpeakablePrimitive(value))
+    .filter(([, value]) => isDisplayPrimitive(value))
     .slice(0, 2)
     .map(([key, value]) => `${humanizeKey(key)} ${String(value)}`)
     .join(", ");
@@ -123,7 +123,7 @@ function looksLikeMutationResult(object: JsonObject): boolean {
   );
 }
 
-function isSpeakablePrimitive(value: JsonValue | undefined): value is string | number | boolean {
+function isDisplayPrimitive(value: JsonValue | undefined): value is string | number | boolean {
   return typeof value === "string" || typeof value === "number" || typeof value === "boolean";
 }
 

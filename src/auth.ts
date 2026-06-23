@@ -217,32 +217,42 @@ async function exchangeAuthorizationCode(
   codeVerifier: string
 ): Promise<SalesforceOAuthSession> {
   const { clientId, clientSecret, tokenUrl, oauthRedirectUri } = appConfig.salesforce;
-  if (!clientId || !clientSecret || !tokenUrl) {
+  if (!clientId || !tokenUrl) {
     throw new Error("Salesforce authorization code flow is not fully configured.");
   }
 
-  return requestToken(appConfig, {
+  const params: Record<string, string> = {
     grant_type: "authorization_code",
     client_id: clientId,
-    client_secret: clientSecret,
     redirect_uri: oauthRedirectUri,
     code_verifier: codeVerifier,
     code
-  });
+  };
+
+  if (clientSecret) {
+    params.client_secret = clientSecret;
+  }
+
+  return requestToken(appConfig, params);
 }
 
 async function refreshAccessToken(appConfig: AppConfig, refreshToken: string): Promise<SalesforceOAuthSession> {
   const { clientId, clientSecret } = appConfig.salesforce;
-  if (!clientId || !clientSecret) {
+  if (!clientId) {
     throw new Error("Salesforce refresh flow is not fully configured.");
   }
 
-  return requestToken(appConfig, {
+  const params: Record<string, string> = {
     grant_type: "refresh_token",
     client_id: clientId,
-    client_secret: clientSecret,
     refresh_token: refreshToken
-  });
+  };
+
+  if (clientSecret) {
+    params.client_secret = clientSecret;
+  }
+
+  return requestToken(appConfig, params);
 }
 
 async function requestToken(

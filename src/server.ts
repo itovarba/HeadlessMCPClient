@@ -11,7 +11,7 @@ import {
 import { config } from "./config.js";
 import { renderDashboard } from "./dashboard.js";
 import { SalesforceMcpClient } from "./mcpClient.js";
-import { ERROR_SPEECH, formatMcpResponse, UNSUPPORTED_SPEECH } from "./responseFormatter.js";
+import { ERROR_ANSWER, formatMcpResponse, UNSUPPORTED_ANSWER } from "./responseFormatter.js";
 import { selectTool } from "./toolSelector.js";
 import type { AskRequest, AskResponse, JsonObject, JsonValue, Logger } from "./types.js";
 
@@ -21,7 +21,7 @@ app.use(express.json({ limit: "1mb" }));
 app.set("trust proxy", 1);
 app.use(
   session({
-    name: "headless-siri-mcp.sid",
+    name: "local-mcp-proxy.sid",
     secret: config.sessionSecret,
     resave: false,
     saveUninitialized: false,
@@ -144,7 +144,7 @@ app.get("/mcp/tools", async (request: Request, response: Response) => {
   } catch (error) {
     if (error instanceof AuthRequiredError) {
       response.status(401).json({
-        speech: "Necesito que inicies sesión en Salesforce antes de consultar las tools MCP.",
+        answer: "Necesito que inicies sesión en Salesforce antes de consultar las tools MCP.",
         intent: "auth_required",
         raw: {
           authUrl: buildLocalAuthUrl(request, userId)
@@ -158,7 +158,7 @@ app.get("/mcp/tools", async (request: Request, response: Response) => {
     });
 
     response.status(500).json({
-      speech: ERROR_SPEECH,
+      answer: ERROR_ANSWER,
       intent: "error",
       raw: buildErrorDiagnostic(error)
     });
@@ -172,7 +172,7 @@ app.post("/ask", async (request: Request<unknown, AskResponse, AskRequest>, resp
 
     if (!question) {
       response.status(400).json({
-        speech: "Necesito una pregunta para consultar Salesforce.",
+        answer: "Necesito una pregunta para consultar Salesforce.",
         intent: "invalid_request",
         tool: null,
         raw: {}
@@ -209,7 +209,7 @@ app.post("/ask", async (request: Request<unknown, AskResponse, AskRequest>, resp
 
     if (!selection.toolName) {
       response.json({
-        speech: UNSUPPORTED_SPEECH,
+        answer: UNSUPPORTED_ANSWER,
         intent: "unsupported",
         tool: null,
         raw: {}
@@ -223,7 +223,7 @@ app.post("/ask", async (request: Request<unknown, AskResponse, AskRequest>, resp
     });
 
     response.json({
-      speech: formatMcpResponse(raw),
+      answer: formatMcpResponse(raw),
       intent: selection.intent,
       tool: selection.toolName,
       raw
@@ -232,7 +232,7 @@ app.post("/ask", async (request: Request<unknown, AskResponse, AskRequest>, resp
     if (error instanceof AuthRequiredError) {
       const userId = request.body.userId?.trim() || config.defaultUserId;
       response.status(401).json({
-        speech: "Necesito que inicies sesión en Salesforce antes de consultar. Abre la URL de autenticación del servicio.",
+        answer: "Necesito que inicies sesión en Salesforce antes de consultar. Abre la URL de autenticación del servicio.",
         intent: "auth_required",
         tool: null,
         raw: {
@@ -247,7 +247,7 @@ app.post("/ask", async (request: Request<unknown, AskResponse, AskRequest>, resp
     });
 
     response.status(500).json({
-      speech: ERROR_SPEECH,
+      answer: ERROR_ANSWER,
       intent: "error",
       tool: null,
       raw: buildErrorDiagnostic(error)

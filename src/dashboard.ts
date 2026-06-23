@@ -374,7 +374,7 @@ export function renderDashboard(): string {
       <header>
         <div>
           <h1>Headless 360 MCP</h1>
-          <p>Pruebas locales del gateway para Siri y Salesforce MCP.</p>
+          <p>Proxy local para descubrir tools y ejecutar llamadas contra Salesforce MCP.</p>
         </div>
         <div class="row">
           <span id="authStatus" class="status">Comprobando sesión</span>
@@ -403,8 +403,8 @@ export function renderDashboard(): string {
           </section>
 
           <section class="panel stack">
-            <h2>Respuesta para Siri</h2>
-            <div id="speech" class="answer muted">Sin respuesta todavía.</div>
+            <h2>Respuesta</h2>
+            <div id="answer" class="answer muted">Sin respuesta todavía.</div>
             <div class="meta">
               <div class="meta-item">
                 <span>intent</span>
@@ -452,7 +452,7 @@ export function renderDashboard(): string {
       const askButton = document.querySelector("#askButton");
       const toolsButton = document.querySelector("#toolsButton");
       const busy = document.querySelector("#busy");
-      const speech = document.querySelector("#speech");
+      const answer = document.querySelector("#answer");
       const intent = document.querySelector("#intent");
       const selectedTool = document.querySelector("#selectedTool");
       const raw = document.querySelector("#raw");
@@ -516,8 +516,8 @@ export function renderDashboard(): string {
           });
           setStatus(authStatus, "Sin login", "warn");
           authStatus.title = "";
-          speech.textContent = "Sesión OAuth cerrada. Vuelve a hacer login para obtener un token nuevo.";
-          speech.classList.remove("muted");
+          answer.textContent = "Sesión OAuth cerrada. Vuelve a hacer login para obtener un token nuevo.";
+          answer.classList.remove("muted");
           intent.textContent = "-";
           selectedTool.textContent = "-";
           raw.textContent = "{}";
@@ -540,8 +540,8 @@ export function renderDashboard(): string {
             })
           });
           const payload = await response.json();
-          speech.textContent = payload.speech || "Sin respuesta.";
-          speech.classList.remove("muted");
+          answer.textContent = payload.answer || "Sin respuesta.";
+          answer.classList.remove("muted");
           intent.textContent = payload.intent || "-";
           selectedTool.textContent = payload.tool || "-";
           raw.textContent = JSON.stringify(payload.raw ?? {}, null, 2);
@@ -552,7 +552,7 @@ export function renderDashboard(): string {
 
           await refreshStatus();
         } catch (error) {
-          speech.textContent = "Error ejecutando la prueba local.";
+          answer.textContent = "Error ejecutando la prueba local.";
           intent.textContent = "error";
           selectedTool.textContent = "-";
           raw.textContent = JSON.stringify({ message: String(error) }, null, 2);
@@ -575,7 +575,7 @@ export function renderDashboard(): string {
             p.className = "muted";
             p.textContent = payload.raw && payload.raw.error
               ? payload.raw.error
-              : payload.speech || "No se han podido descubrir tools.";
+              : payload.answer || "No se han podido descubrir tools.";
             tools.appendChild(p);
             setStatus(toolCount, "Error", "bad");
             return;

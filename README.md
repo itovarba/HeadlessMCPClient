@@ -1,6 +1,6 @@
-# Headless Siri MCP Client
+# Local Salesforce MCP Proxy
 
-Local Headless 360 MCP client gateway for a Siri Shortcut. The service receives a natural-language request, connects to a configurable Salesforce Hosted MCP Server, discovers MCP tools dynamically, selects one using the live MCP context, executes it, and returns concise Spanish JSON for Siri.
+Local Headless 360 MCP proxy for a configurable Salesforce Hosted MCP Server. The service receives a natural-language request, discovers MCP tools dynamically, selects the best tool using the live MCP context, executes it, and returns concise JSON for local clients or test tooling.
 
 It does not hardcode Salesforce tool names or business capabilities. Tool selection uses `listTools()`, tool names, descriptions, input schemas, and available output.
 
@@ -30,7 +30,7 @@ SALESFORCE_CLIENT_SECRET=
 SALESFORCE_TOKEN_URL=https://login.salesforce.com/services/oauth2/token
 SALESFORCE_AUTHORIZATION_URL=https://login.salesforce.com/services/oauth2/authorize
 SALESFORCE_OAUTH_REDIRECT_URI=http://localhost:3000/auth/callback
-SALESFORCE_OAUTH_SCOPES=api refresh_token
+SALESFORCE_OAUTH_SCOPES=refresh_token mcp_api
 SALESFORCE_ACCESS_TOKEN=
 DEFAULT_USER_ID=iosu.demo
 
@@ -53,12 +53,31 @@ Create a Salesforce Connected App or External Client App with OAuth enabled.
 
 The app supports OAuth Authorization Code Flow with PKCE. If Salesforce requires PKCE, keep that setting enabled; `/auth/login` sends a `code_challenge` with method `S256`, and `/auth/callback` sends the matching `code_verifier`.
 
-Recommended OAuth scopes:
+OAuth settings matching the Copilot Studio external app:
 
 ```text
-api
-refresh_token
+Selected OAuth Scopes:
+- Perform requests at any time (refresh_token, offline_access)
+- Access Salesforce hosted MCP servers (mcp_api)
+
+Flow Enablement:
+- Authorization Code flow with PKCE
+
+Security:
+- Require Proof Key for Code Exchange (PKCE)
+- Issue JSON Web Token (JWT)-based access tokens for named users
+- Require secret for Web Server Flow: disabled
+- Require secret for Refresh Token Flow: disabled
 ```
+
+In `.env`, this maps to:
+
+```env
+SALESFORCE_OAUTH_SCOPES=refresh_token mcp_api
+SALESFORCE_CLIENT_SECRET=
+```
+
+`SALESFORCE_CLIENT_SECRET` is optional. Leave it empty when your Salesforce External Client App does not require a secret for the web server or refresh token flow.
 
 Callback URL for local development:
 
@@ -139,7 +158,7 @@ Response shape:
 
 ```json
 {
-  "speech": "Texto corto para que Siri lo lea en voz alta",
+  "answer": "Respuesta corta generada a partir del resultado MCP",
   "intent": "detected_intent",
   "tool": "selected_mcp_tool_name",
   "raw": {}
@@ -147,63 +166,6 @@ Response shape:
 ```
 
 If `/ask` is called before login, the response has `intent: "auth_required"` and includes a local `authUrl` in `raw`.
-
-## Siri Shortcut
-
-Shortcut name:
-
-```text
-Asistente Comercial CPC
-```
-
-Actions:
-
-1. Dictate Text
-
-Prompt:
-
-```text
-¿Qué necesitas?
-```
-
-2. Get Contents of URL
-
-Method:
-
-```text
-POST
-```
-
-URL:
-
-```text
-http://MAC_IP_OR_NGROK_URL:3000/ask
-```
-
-Headers:
-
-```text
-Content-Type: application/json
-```
-
-JSON body:
-
-```json
-{
-  "userId": "iosu.demo",
-  "question": "[Dictated Text]"
-}
-```
-
-3. Get Dictionary Value
-
-Key:
-
-```text
-speech
-```
-
-4. Speak Text
 
 ## Connectivity Options
 
@@ -223,7 +185,7 @@ speech
 6. Selects exactly one MCP tool and builds minimal valid JSON input.
 7. Verifies that the selected tool exists in the MCP tool list.
 8. Calls the MCP tool with JSON input.
-9. Formats the tool output into short Spanish speech.
+9. Formats the tool output into a short Spanish answer.
 
 If `LLM_PROVIDER=openai` and `OPENAI_API_KEY` is configured, the service uses OpenAI for tool selection with strict JSON output. If OpenAI is not configured or fails, the deterministic fallback scores available tools by matching question terms against tool names, descriptions, and input schema fields. The fallback still uses the MCP server context dynamically and returns `unsupported` if confidence is low.
 
@@ -265,7 +227,7 @@ Tokens, refresh tokens, client secrets, passwords, and API keys are redacted fro
 - Do not paste refresh tokens into `.env`; let the app obtain them through OAuth.
 - Use HTTPS in real environments.
 - Use least-privilege Salesforce credentials.
-- Avoid returning sensitive customer information in voice responses.
+- Avoid returning sensitive customer information in proxy responses.
 
 ## Troubleshooting
 
@@ -276,4 +238,4 @@ Tokens, refresh tokens, client secrets, passwords, and API keys are redacted fro
 - `Salesforce OAuth refresh failed`: verify connected app settings, OAuth scopes, client id, client secret, and token URL.
 - `MCP HTTP request failed`: verify `SALESFORCE_MCP_SERVER_URL`, network access, bearer token scope, and Salesforce Hosted MCP availability.
 - `MCP tools/list response did not include a tools array`: the server may use a different transport shape. Review `src/mcpClient.ts`.
-- Siri cannot reach the Mac: confirm both devices are on the same Wi-Fi, use the Mac LAN IP, disable blocking firewall rules, or use ngrok/Tailscale.
+- Client cannot reach the proxy: confirm it can access the Mac local IP, disable blocking firewall rules, or use ngrok/Tailscale for controlled demos.
