@@ -4,7 +4,7 @@ import {
   AuthRequiredError,
   clearSalesforceOAuth,
   createSalesforceAuthorizationUrl,
-  getSalesforceAccessToken,
+  getSalesforceAuthContext,
   getSalesforceAuthStatus,
   handleSalesforceOAuthCallback
 } from "./auth.js";
@@ -87,6 +87,7 @@ app.get("/auth/callback", async (request: Request, response: Response) => {
 
     logger.info("oauth_login_completed", {
       userId: result.userId,
+      salesforceUserId: result.salesforceUserId ?? "",
       expiresAt: new Date(result.expiresAt).toISOString()
     });
 
@@ -122,12 +123,13 @@ app.get("/mcp/tools", async (request: Request, response: Response) => {
   const userId = readQueryString(request.query.userId) || request.session.userId || config.defaultUserId;
 
   try {
-    const mcpClient = await createMcpClient(userId, request.session);
+    const { mcpClient, authContext } = await createMcpClient(userId, request.session);
     await mcpClient.connect();
     const tools = await mcpClient.listTools();
 
     logger.info("mcp_tools_discovered", {
       userId,
+      salesforceUserId: authContext.salesforceUserId ?? "",
       count: tools.length
     });
 
@@ -166,9 +168,10 @@ app.get("/mcp/tools", async (request: Request, response: Response) => {
 });
 
 app.post("/ask", async (request: Request<unknown, AskResponse, AskRequest>, response: Response<AskResponse>) => {
+  const appUserId = request.body.userId?.trim() || config.defaultUserId;
+
   try {
     const question = request.body.question?.trim();
-    const userId = request.body.userId?.trim() || config.defaultUserId;
 
     if (!question) {
       response.status(400).json({
@@ -181,11 +184,19 @@ app.post("/ask", async (request: Request<unknown, AskResponse, AskRequest>, resp
     }
 
     logger.info("incoming_question", {
-      userId,
+      userId: appUserId,
       question
     });
 
-    const mcpClient = await createMcpClient(userId, request.session);
+    const { mcpClient, authContext } = await createMcpClient(appUserId, request.session);
+    const salesforceUserId = authContext.salesforceUserId ?? appUserId;
+
+    logger.info("salesforce_user_context_resolved", {
+      appUserId,
+      salesforceUserId,
+      hasSalesforceUserId: Boolean(authContext.salesforceUserId)
+    });
+
     await mcpClient.connect();
 
     const tools = await mcpClient.listTools();
@@ -195,7 +206,7 @@ app.post("/ask", async (request: Request<unknown, AskResponse, AskRequest>, resp
 
     const selection = await selectTool({
       question,
-      userId,
+      userId: salesforceUserId,
       currentDate: new Date().toISOString().slice(0, 10),
       tools,
       config,
@@ -235,13 +246,12 @@ app.post("/ask", async (request: Request<unknown, AskResponse, AskRequest>, resp
     });
   } catch (error) {
     if (error instanceof AuthRequiredError) {
-      const userId = request.body.userId?.trim() || config.defaultUserId;
       response.status(401).json({
         answer: "Necesito que inicies sesión en Salesforce antes de consultar. Abre la URL de autenticación del servicio.",
         intent: "auth_required",
         tool: null,
         raw: {
-          authUrl: buildLocalAuthUrl(request, userId)
+          authUrl: buildLocalAuthUrl(request, appUserId)
         }
       });
       return;
@@ -269,8 +279,8 @@ app.listen(config.port, () => {
 async function createMcpClient(
   userId: string,
   sessionData: Request["session"] | undefined
-): Promise<SalesforceMcpClient> {
-  const authRequest: Parameters<typeof getSalesforceAccessToken>[0] = {
+): Promise<{ mcpClient: SalesforceMcpClient; authContext: Awaited<ReturnType<typeof getSalesforceAuthContext>> }> {
+  const authRequest: Parameters<typeof getSalesforceAuthContext>[0] = {
     appConfig: config,
     userId
   };
@@ -279,9 +289,12 @@ async function createMcpClient(
     authRequest.session = sessionData;
   }
 
-  const accessToken = await getSalesforceAccessToken(authRequest);
+  const authContext = await getSalesforceAuthContext(authRequest);
 
-  return new SalesforceMcpClient(config.salesforce.mcpServerUrl, accessToken, logger);
+  return {
+    mcpClient: new SalesforceMcpClient(config.salesforce.mcpServerUrl, authContext.accessToken, logger),
+    authContext
+  };
 }
 
 function sanitizeForLog(value: JsonValue | undefined): JsonObject {

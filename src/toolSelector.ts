@@ -21,6 +21,7 @@ Rules:
 - Do not invent tool names.
 - Do not invent fields that are not in the selected tool schema.
 - toolInput must be a JSON object.
+- userId is the current Salesforce User Id when available. Use it for OwnerId, user id, manager, or owner fields when the schema or SOQL query requires the current user.
 - If the request is ambiguous, choose the safest read-only tool.
 - If a write/action tool is selected, make sure the user clearly requested an action.
 - If no tool is appropriate, return:
@@ -334,7 +335,7 @@ function buildToolInputForTool(
   }
 
   if ("q" in properties) {
-    const q = buildSoqlQuery(context.question);
+    const q = buildSoqlQuery(context.question, context.userId);
     return q ? { q } : undefined;
   }
 
@@ -438,7 +439,7 @@ function valueForSchemaField(
   }
 
   if (lowerName === "q") {
-    return buildSoqlQuery(context.question);
+    return buildSoqlQuery(context.question, context.userId);
   }
 
   if (matchesAny(lowerName, ["userid", "user_id", "user", "owner", "manager", "salesmanager", "sales_manager"])) {
@@ -567,30 +568,65 @@ function toolIntentScore(questionTerms: string[], tool: McpTool): number {
   return 0;
 }
 
-function buildSoqlQuery(question: string): string | undefined {
+function buildSoqlQuery(question: string, userId: string): string | undefined {
   const terms = new Set(expandTerms(tokenize(question)));
+  const ownerFilter = buildOwnerFilter(terms, userId);
 
   if (hasAny(terms, ["task", "todo", "activity", "tarea", "actividad"])) {
-    return "SELECT Id, Subject, Status, ActivityDate, Priority, WhatId, WhoId FROM Task WHERE Status != 'Completed' ORDER BY ActivityDate ASC LIMIT 10";
+    return `SELECT Id, Subject, Status, ActivityDate, Priority, WhatId, WhoId FROM Task WHERE ${[
+      ownerFilter,
+      "Status != 'Completed'"
+    ].filter(Boolean).join(" AND ")} ORDER BY ActivityDate ASC LIMIT 10`;
   }
 
   if (hasAny(terms, ["opportunity", "pipeline", "oportunidad", "deal"])) {
-    return "SELECT Id, Name, StageName, Amount, CloseDate, Account.Name FROM Opportunity WHERE IsClosed = false ORDER BY CloseDate ASC LIMIT 10";
+    return `SELECT Id, Name, StageName, Amount, CloseDate, Account.Name FROM Opportunity WHERE ${[
+      ownerFilter,
+      "IsClosed = false"
+    ].filter(Boolean).join(" AND ")} ORDER BY CloseDate ASC LIMIT 10`;
   }
 
   if (hasAny(terms, ["contact", "contacto"])) {
-    return "SELECT Id, Name, Email, Phone, Account.Name FROM Contact ORDER BY LastModifiedDate DESC LIMIT 10";
+    const where = ownerFilter ? ` WHERE ${ownerFilter}` : "";
+    return `SELECT Id, Name, Email, Phone, Account.Name FROM Contact${where} ORDER BY LastModifiedDate DESC LIMIT 10`;
   }
 
   if (hasAny(terms, ["case", "ticket"]) && !hasAny(terms, ["success"])) {
-    return "SELECT Id, CaseNumber, Subject, Status, Priority, Account.Name FROM Case ORDER BY LastModifiedDate DESC LIMIT 10";
+    const where = ownerFilter ? ` WHERE ${ownerFilter}` : "";
+    return `SELECT Id, CaseNumber, Subject, Status, Priority, Account.Name FROM Case${where} ORDER BY LastModifiedDate DESC LIMIT 10`;
   }
 
   if (hasAny(terms, ["account", "customer", "client", "cuenta", "cliente"])) {
-    return "SELECT Id, Name, Type, Industry, Owner.Name, LastModifiedDate FROM Account ORDER BY LastModifiedDate DESC LIMIT 10";
+    const where = ownerFilter ? ` WHERE ${ownerFilter}` : "";
+    return `SELECT Id, Name, Type, Industry, Owner.Name, LastModifiedDate FROM Account${where} ORDER BY LastModifiedDate DESC LIMIT 10`;
   }
 
   return undefined;
+}
+
+function buildOwnerFilter(terms: Set<string>, userId: string): string | undefined {
+  if (!isSalesforceId(userId)) {
+    return undefined;
+  }
+
+  const isSelfScoped = hasAny(terms, [
+    "my",
+    "mine",
+    "own",
+    "me",
+    "mi",
+    "mis",
+    "mio",
+    "mios",
+    "debo",
+    "tengo",
+    "asignado",
+    "asignada",
+    "asignados",
+    "asignadas"
+  ]);
+
+  return isSelfScoped ? `OwnerId = '${userId}'` : undefined;
 }
 
 function inferSObjectName(question: string): string | undefined {
@@ -614,6 +650,10 @@ function inferRelationshipPath(question: string): string | undefined {
 
 function extractSalesforceId(text: string): string | undefined {
   return text.match(/\b[a-zA-Z0-9]{15}(?:[a-zA-Z0-9]{3})?\b/)?.[0];
+}
+
+function isSalesforceId(value: string): boolean {
+  return /^[a-zA-Z0-9]{15}(?:[a-zA-Z0-9]{3})?$/.test(value);
 }
 
 function schemaSearchText(value: JsonValue): string {

@@ -388,7 +388,7 @@ export function renderDashboard(): string {
           <section class="panel stack">
             <h2>Ask</h2>
             <label>
-              userId
+              usuario local
               <input id="userId" value="iosu.demo" autocomplete="off">
             </label>
             <label>
@@ -495,6 +495,8 @@ export function renderDashboard(): string {
         if (payload.authenticated) {
           setStatus(authStatus, "Conectado", "ok");
           authStatus.title = [
+            payload.appUserId ? "appUserId: " + payload.appUserId : "",
+            payload.salesforceUserId ? "salesforceUserId: " + payload.salesforceUserId : "",
             payload.instanceUrl ? "instanceUrl: " + payload.instanceUrl : "",
             payload.scope ? "scope: " + payload.scope : "",
             payload.expiresAt ? "expiresAt: " + payload.expiresAt : ""

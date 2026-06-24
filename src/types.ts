@@ -35,7 +35,9 @@ export interface SalesforceOAuthSession {
   accessToken: string;
   refreshToken?: string;
   expiresAt: number;
+  salesforceUserId?: string;
   instanceUrl?: string;
+  identityUrl?: string;
   issuedAt?: string;
   tokenType?: string;
   scope?: string;

@@ -23,7 +23,7 @@ Edit `.env`:
 ```bash
 PORT=3000
 SESSION_SECRET=replace-with-a-long-random-string
-SALESFORCE_MCP_SERVER_URL=https://your-domain.my.salesforce.com/services/mcp
+SALESFORCE_MCP_SERVER_URL=https://api.salesforce.com/platform/mcp/v1/custom/MCPServerLab
 SALESFORCE_AUTH_TYPE=oauth
 SALESFORCE_CLIENT_ID=
 SALESFORCE_CLIENT_SECRET=
@@ -41,7 +41,9 @@ OPENAI_MODEL=gpt-5.4-mini
 ENABLE_DETERMINISTIC_FALLBACK=true
 ```
 
-The app fails fast if mandatory Salesforce MCP, session, or OAuth variables are missing. In normal use, do not paste a refresh token into `.env`. The app obtains the authorization code, access token, and refresh token through OAuth, then keeps the token session in server memory for the configured `userId`.
+The app fails fast if mandatory Salesforce MCP, session, or OAuth variables are missing. In normal use, do not paste a refresh token into `.env`. The app obtains the authorization code, access token, refresh token, and Salesforce identity URL through OAuth, then keeps the token session in server memory for the configured local `userId`.
+
+`DEFAULT_USER_ID` and request `userId` are local session aliases, for example `iosu.demo`. They are not Salesforce record IDs. After OAuth login, the proxy extracts the real Salesforce User Id, usually a `005...` value, and uses that Id when tool selection needs current-user context such as `OwnerId`, user, manager, or sales manager fields.
 
 `SALESFORCE_TOKEN_URL` can point to `login.salesforce.com`, `test.salesforce.com`, or a custom Salesforce domain.
 
@@ -266,11 +268,13 @@ Expected:
 {
   "authenticated": true,
   "mode": "oauth_session",
+  "appUserId": "user.demo",
+  "salesforceUserId": "005...",
   "scope": "refresh_token mcp_api"
 }
 ```
 
-The scope order can vary. The important part is that `mcp_api` is present.
+The scope order can vary. The important parts are that `mcp_api` is present and `salesforceUserId` contains the real Salesforce user record id. If `salesforceUserId` is empty, log out, restart the Node process, and complete OAuth login again.
 
 Then discover tools:
 
@@ -313,7 +317,7 @@ Browser test UI:
 http://localhost:3000/
 ```
 
-The UI includes OAuth status, a `userId` field, a text box for test questions, a button to call `/ask`, and a button to discover the current MCP tools.
+The UI includes OAuth status, a local user alias field, a text box for test questions, a button to call `/ask`, and a button to discover the current MCP tools.
 
 Ask endpoint:
 
@@ -350,11 +354,11 @@ If `/ask` is called before login, the response has `intent: "auth_required"` and
 
 `POST /ask` performs this flow:
 
-1. Reads `question` and `userId`.
+1. Reads `question` and local `userId`.
 2. Gets a Salesforce access token from the app-managed OAuth session, refreshing it when needed.
 3. Connects to the Salesforce Hosted MCP Server.
 4. Calls `listTools()`.
-5. Builds a selection prompt from the user question, user id, current date, and available MCP tools.
+5. Resolves the real Salesforce User Id from the OAuth session and builds a selection prompt from the user question, Salesforce user id, current date, and available MCP tools.
 6. Selects exactly one MCP tool and builds minimal valid JSON input.
 7. Verifies that the selected tool exists in the MCP tool list.
 8. Calls the MCP tool with JSON input.
@@ -411,6 +415,7 @@ Tokens, refresh tokens, client secrets, passwords, and API keys are redacted fro
 - `Salesforce OAuth refresh failed`: verify connected app settings, OAuth scopes, client id, client secret, and token URL.
 - `MCP HTTP request failed`: verify `SALESFORCE_MCP_SERVER_URL`, network access, bearer token scope, and Salesforce Hosted MCP availability.
 - `Invalid token`: confirm the token status includes `mcp_api`, the External Client App has **Issue JSON Web Token (JWT)-based access tokens for named users** enabled, and the MCP server URL is the one copied from Salesforce.
+- `invalid ID field: iosu.demo`: the selector is using a local alias where Salesforce expects a record id. Restart the app, log out, log in again, and confirm `/auth/status` includes `salesforceUserId` with a `005...` value.
 - `llm_tool_selection_failed`: verify `OPENAI_API_KEY`, `OPENAI_MODEL`, and that the API key has `Chat completions (/v1/chat/completions): Request`.
 - No OpenAI usage appears: restart the Node process after editing `.env`, make sure Salesforce auth succeeds first, and check for `llm_tool_selection_started` in logs. `/ask` does not call OpenAI if it returns `auth_required`.
 - `MCP tools/list response did not include a tools array`: the server may use a different transport shape. Review `src/mcpClient.ts`.

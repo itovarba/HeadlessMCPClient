@@ -10,9 +10,19 @@ interface SalesforceTokenResponse {
   expires_in?: number;
   issued_at?: string;
   instance_url?: string;
+  id?: string;
   scope?: string;
   error?: string;
   error_description?: string;
+}
+
+export interface SalesforceAuthContext {
+  accessToken: string;
+  appUserId: string;
+  salesforceUserId?: string;
+  expiresAt?: number;
+  instanceUrl?: string;
+  scope?: string;
 }
 
 type RequestSession = Session & Partial<SessionData>;
@@ -38,10 +48,26 @@ export async function getSalesforceAccessToken(params: {
   userId: string;
   session?: RequestSession;
 }): Promise<string> {
+  return (await getSalesforceAuthContext(params)).accessToken;
+}
+
+export async function getSalesforceAuthContext(params: {
+  appConfig: AppConfig;
+  userId: string;
+  session?: RequestSession;
+}): Promise<SalesforceAuthContext> {
   const { appConfig, userId, session } = params;
   const staticAccessToken = appConfig.salesforce.accessToken;
   if (staticAccessToken) {
-    return staticAccessToken;
+    const context: SalesforceAuthContext = {
+      accessToken: staticAccessToken,
+      appUserId: userId
+    };
+    const salesforceUserId = extractSalesforceUserIdFromAccessToken(staticAccessToken);
+    if (salesforceUserId) {
+      context.salesforceUserId = salesforceUserId;
+    }
+    return context;
   }
 
   const sessionToken = session?.salesforceOAuth;
@@ -49,14 +75,14 @@ export async function getSalesforceAccessToken(params: {
     const refreshed = await ensureFreshToken(appConfig, sessionToken);
     session.salesforceOAuth = refreshed;
     userTokenStore.set(userId, refreshed);
-    return refreshed.accessToken;
+    return buildAuthContext(userId, refreshed);
   }
 
   const storedToken = userTokenStore.get(userId);
   if (storedToken) {
     const refreshed = await ensureFreshToken(appConfig, storedToken);
     userTokenStore.set(userId, refreshed);
-    return refreshed.accessToken;
+    return buildAuthContext(userId, refreshed);
   }
 
   throw new AuthRequiredError();
@@ -105,7 +131,7 @@ export async function handleSalesforceOAuthCallback(params: {
   code: string;
   state: string;
   session?: RequestSession;
-}): Promise<{ userId: string; expiresAt: number; instanceUrl?: string }> {
+}): Promise<{ userId: string; expiresAt: number; instanceUrl?: string; salesforceUserId?: string }> {
   const { appConfig, code, state, session } = params;
   const oauthState = consumeOAuthState(state, session);
   const token = await exchangeAuthorizationCode(appConfig, code, oauthState.codeVerifier);
@@ -117,12 +143,15 @@ export async function handleSalesforceOAuthCallback(params: {
     delete session.oauthLoginState;
   }
 
-  const result: { userId: string; expiresAt: number; instanceUrl?: string } = {
+  const result: { userId: string; expiresAt: number; instanceUrl?: string; salesforceUserId?: string } = {
     userId: oauthState.userId,
     expiresAt: token.expiresAt
   };
   if (token.instanceUrl) {
     result.instanceUrl = token.instanceUrl;
+  }
+  if (token.salesforceUserId) {
+    result.salesforceUserId = token.salesforceUserId;
   }
   return result;
 }
@@ -151,10 +180,13 @@ export function getSalesforceAuthStatus(params: {
   return {
     authenticated: true,
     mode: "oauth_session",
+    appUserId: userId,
     userId,
+    salesforceUserId: token.salesforceUserId ?? extractSalesforceUserIdFromSession(token) ?? "",
     expiresAt: new Date(token.expiresAt).toISOString(),
     hasRefreshToken: Boolean(token.refreshToken),
     instanceUrl: token.instanceUrl ?? "",
+    identityUrl: token.identityUrl ?? "",
     scope: token.scope ?? ""
   };
 }
@@ -289,6 +321,13 @@ async function requestToken(
   if (payload.instance_url) {
     token.instanceUrl = payload.instance_url;
   }
+  if (payload.id) {
+    token.identityUrl = payload.id;
+  }
+  const salesforceUserId = extractSalesforceUserId(payload.id, payload.access_token);
+  if (salesforceUserId) {
+    token.salesforceUserId = salesforceUserId;
+  }
   if (payload.issued_at) {
     token.issuedAt = payload.issued_at;
   }
@@ -299,6 +338,102 @@ async function requestToken(
     token.scope = payload.scope;
   }
   return token;
+}
+
+function buildAuthContext(appUserId: string, token: SalesforceOAuthSession): SalesforceAuthContext {
+  const context: SalesforceAuthContext = {
+    accessToken: token.accessToken,
+    appUserId,
+    expiresAt: token.expiresAt
+  };
+
+  const salesforceUserId = token.salesforceUserId ?? extractSalesforceUserIdFromSession(token);
+  if (salesforceUserId) {
+    context.salesforceUserId = salesforceUserId;
+  }
+  if (token.instanceUrl) {
+    context.instanceUrl = token.instanceUrl;
+  }
+  if (token.scope) {
+    context.scope = token.scope;
+  }
+
+  return context;
+}
+
+function extractSalesforceUserId(identityUrl: string | undefined, accessToken: string): string | undefined {
+  return extractSalesforceUserIdFromIdentityUrl(identityUrl) ?? extractSalesforceUserIdFromAccessToken(accessToken);
+}
+
+function extractSalesforceUserIdFromSession(token: SalesforceOAuthSession): string | undefined {
+  return extractSalesforceUserIdFromIdentityUrl(token.identityUrl) ?? extractSalesforceUserIdFromAccessToken(token.accessToken);
+}
+
+function extractSalesforceUserIdFromIdentityUrl(identityUrl: string | undefined): string | undefined {
+  if (!identityUrl) {
+    return undefined;
+  }
+
+  try {
+    const parsed = new URL(identityUrl);
+    const candidate = parsed.pathname.split("/").filter(Boolean).at(-1);
+    return candidate && isSalesforceId(candidate) ? candidate : undefined;
+  } catch {
+    const candidate = identityUrl.split("/").filter(Boolean).at(-1);
+    return candidate && isSalesforceId(candidate) ? candidate : undefined;
+  }
+}
+
+function extractSalesforceUserIdFromAccessToken(accessToken: string): string | undefined {
+  const payload = decodeJwtPayload(accessToken);
+  if (!payload) {
+    return undefined;
+  }
+
+  const candidates = [
+    payload.user_id,
+    payload.userId,
+    payload.uid,
+    payload.sub,
+    payload.prn,
+    payload.username
+  ];
+
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && isSalesforceId(candidate)) {
+      return candidate;
+    }
+  }
+
+  return undefined;
+}
+
+function decodeJwtPayload(token: string): JsonObject | undefined {
+  const [, payload] = token.split(".");
+  if (!payload) {
+    return undefined;
+  }
+
+  try {
+    const decoded = Buffer.from(base64UrlToBase64(payload), "base64").toString("utf8");
+    const parsed = JSON.parse(decoded) as unknown;
+    return isJsonObject(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function base64UrlToBase64(value: string): string {
+  const base64 = value.replace(/-/g, "+").replace(/_/g, "/");
+  return base64.padEnd(Math.ceil(base64.length / 4) * 4, "=");
+}
+
+function isSalesforceId(value: string): boolean {
+  return /^[a-zA-Z0-9]{15}(?:[a-zA-Z0-9]{3})?$/.test(value);
+}
+
+function isJsonObject(value: unknown): value is JsonObject {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function createPkceCodeVerifier(): string {
