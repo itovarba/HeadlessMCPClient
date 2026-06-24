@@ -14,11 +14,13 @@ Select the best MCP tool and build the JSON input for that tool.
 
 Rules:
 - Return strict JSON only.
+- Do not include markdown, code fences, comments, or explanatory text.
 - Select only one tool.
 - toolName must exactly match one available MCP tool.
 - Use the tool descriptions and input schemas as the source of truth.
 - Do not invent tool names.
 - Do not invent fields that are not in the selected tool schema.
+- toolInput must be a JSON object.
 - If the request is ambiguous, choose the safest read-only tool.
 - If a write/action tool is selected, make sure the user clearly requested an action.
 - If no tool is appropriate, return:
@@ -41,9 +43,25 @@ interface OpenAiChatResponse {
       content?: string;
     };
   }>;
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    total_tokens?: number;
+  };
   error?: {
     message?: string;
   };
+}
+
+interface OpenAiUsage {
+  promptTokens?: number;
+  completionTokens?: number;
+  totalTokens?: number;
+}
+
+interface OpenAiSelectionResult {
+  selection: ToolSelection;
+  usage?: OpenAiUsage;
 }
 
 export async function selectTool(params: {
@@ -60,9 +78,17 @@ export async function selectTool(params: {
     return unsupportedSelection();
   }
 
+  let fallbackReason = "openai_not_configured";
+
   if (config.llm.provider === "openai" && config.llm.openaiApiKey) {
     try {
-      const llmSelection = await selectWithOpenAi({
+      logger?.info("llm_tool_selection_started", {
+        provider: "openai",
+        model: config.llm.openaiModel,
+        endpoint: "/v1/chat/completions"
+      });
+
+      const llmResult = await selectWithOpenAi({
         question,
         userId,
         currentDate,
@@ -70,15 +96,37 @@ export async function selectTool(params: {
         config
       });
 
-      return normalizeAndValidateSelection(llmSelection, tools, { question, userId, currentDate });
+      const normalizedSelection = normalizeAndValidateSelection(llmResult.selection, tools, { question, userId, currentDate });
+      const successLog: JsonObject = {
+        provider: "openai",
+        model: config.llm.openaiModel,
+        intent: normalizedSelection.intent,
+        tool: normalizedSelection.toolName
+      };
+
+      if (llmResult.usage) {
+        successLog.usage = { ...llmResult.usage };
+      }
+
+      logger?.info("llm_tool_selection_succeeded", successLog);
+
+      return normalizedSelection;
     } catch (error) {
+      fallbackReason = "llm_error";
       logger?.warn("llm_tool_selection_failed", {
         message: error instanceof Error ? error.message : "Unknown LLM selection error"
       });
     }
+  } else if (config.llm.provider === "none") {
+    fallbackReason = "provider_disabled";
+  } else if (!config.llm.openaiApiKey) {
+    fallbackReason = "api_key_missing";
   }
 
   if (config.enableDeterministicFallback) {
+    logger?.info("deterministic_tool_selection_used", {
+      reason: fallbackReason
+    });
     return selectWithDeterministicFallback({ question, userId, currentDate, tools });
   }
 
@@ -91,7 +139,7 @@ async function selectWithOpenAi(params: {
   currentDate: string;
   tools: McpTool[];
   config: AppConfig;
-}): Promise<ToolSelection> {
+}): Promise<OpenAiSelectionResult> {
   const { question, userId, currentDate, tools, config } = params;
   const body = {
     model: config.llm.openaiModel,
@@ -145,7 +193,58 @@ async function selectWithOpenAi(params: {
     throw new Error("OpenAI response did not include message content.");
   }
 
-  return JSON.parse(content) as ToolSelection;
+  const result: OpenAiSelectionResult = {
+    selection: parseOpenAiSelection(content)
+  };
+  const usage = normalizeOpenAiUsage(payload.usage);
+  if (usage) {
+    result.usage = usage;
+  }
+
+  return result;
+}
+
+function parseOpenAiSelection(content: string): ToolSelection {
+  const jsonText = extractJsonObject(content);
+  const parsed = JSON.parse(jsonText) as unknown;
+  if (!isJsonObject(parsed)) {
+    throw new Error("OpenAI response was not a JSON object.");
+  }
+
+  return parsed as unknown as ToolSelection;
+}
+
+function extractJsonObject(content: string): string {
+  const trimmed = content.trim();
+  const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  const candidate = (fenced?.[1] ?? trimmed).trim();
+  const start = candidate.indexOf("{");
+  const end = candidate.lastIndexOf("}");
+
+  if (start === -1 || end === -1 || end < start) {
+    throw new Error("OpenAI response did not contain a JSON object.");
+  }
+
+  return candidate.slice(start, end + 1);
+}
+
+function normalizeOpenAiUsage(usage: OpenAiChatResponse["usage"]): OpenAiUsage | undefined {
+  if (!usage) {
+    return undefined;
+  }
+
+  const normalized: OpenAiUsage = {};
+  if (typeof usage.prompt_tokens === "number") {
+    normalized.promptTokens = usage.prompt_tokens;
+  }
+  if (typeof usage.completion_tokens === "number") {
+    normalized.completionTokens = usage.completion_tokens;
+  }
+  if (typeof usage.total_tokens === "number") {
+    normalized.totalTokens = usage.total_tokens;
+  }
+
+  return Object.keys(normalized).length > 0 ? normalized : undefined;
 }
 
 function selectWithDeterministicFallback(params: {

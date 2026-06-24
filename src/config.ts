@@ -129,7 +129,7 @@ function buildConfig(): AppConfig {
 
   const llmConfig: AppConfig["llm"] = {
     provider: readLlmProvider(),
-    openaiModel: readOptional("OPENAI_MODEL") ?? "gpt-4.1-mini"
+    openaiModel: readOptional("OPENAI_MODEL") ?? "gpt-5.4-mini"
   };
 
   const openaiApiKey = readOptional("OPENAI_API_KEY");

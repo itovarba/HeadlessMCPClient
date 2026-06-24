@@ -36,7 +36,7 @@ DEFAULT_USER_ID=user.demo
 
 LLM_PROVIDER=openai
 OPENAI_API_KEY=
-OPENAI_MODEL=gpt-4.1-mini
+OPENAI_MODEL=gpt-5.4-mini
 
 ENABLE_DETERMINISTIC_FALLBACK=true
 ```
@@ -46,6 +46,80 @@ The app fails fast if mandatory Salesforce MCP, session, or OAuth variables are 
 `SALESFORCE_TOKEN_URL` can point to `login.salesforce.com`, `test.salesforce.com`, or a custom Salesforce domain.
 
 `SALESFORCE_ACCESS_TOKEN` is only a development bypass. If it is set, the app uses it directly and skips the login flow. Leave it empty for app-managed OAuth.
+
+## OpenAI Tool Selection
+
+OpenAI is optional but enabled by default when an API key is present. This proxy uses OpenAI only to select the best Salesforce MCP tool and build the JSON input for that tool. Salesforce authentication, MCP discovery, and MCP execution still happen directly between this local proxy and Salesforce.
+
+Default configuration:
+
+```env
+LLM_PROVIDER=openai
+OPENAI_MODEL=gpt-5.4-mini
+OPENAI_API_KEY=
+ENABLE_DETERMINISTIC_FALLBACK=true
+```
+
+The app currently calls:
+
+```text
+POST https://api.openai.com/v1/chat/completions
+```
+
+For this code path, configure the OpenAI API key with the minimum permission:
+
+```text
+Permissions: Restricted
+Model capabilities:
+- Chat completions (/v1/chat/completions): Request
+
+Everything else:
+- None
+```
+
+If your OpenAI project supports model allowlists, allow only the model used by this app, for example `gpt-5.4-mini`. A low project budget is recommended for demos.
+
+### Using a ChatGPT Enterprise Account
+
+A ChatGPT Enterprise seat does not automatically mean that you can create OpenAI API keys. The API key is created in the OpenAI API Platform. If you cannot see API keys or projects, ask your workspace or platform admin to:
+
+1. Enable or grant access to OpenAI API Platform.
+2. Create a dedicated project, for example `local-salesforce-mcp-proxy-demo`.
+3. Create a restricted API key for that project.
+4. Grant only `Chat completions (/v1/chat/completions): Request`.
+5. Enable the model you plan to use, usually `gpt-5.4-mini`.
+6. Set a small project budget or usage limit.
+
+Then set the key locally:
+
+```env
+OPENAI_API_KEY=sk-...
+```
+
+Never commit `.env`, never paste the key into logs, and rotate the key after demos.
+
+### Deterministic Fallback
+
+`ENABLE_DETERMINISTIC_FALLBACK=true` means the proxy keeps working if OpenAI is not configured or temporarily fails. The fallback still uses live MCP context from Salesforce: tool names, descriptions, and input schemas. It scores tools by matching the question against that dynamic context and returns `unsupported` when confidence is low.
+
+Recommended values:
+
+```env
+# Demo and normal local use
+ENABLE_DETERMINISTIC_FALLBACK=true
+
+# Strict debugging, when you want OpenAI failures to be visible
+ENABLE_DETERMINISTIC_FALLBACK=false
+```
+
+Useful logs:
+
+```json
+{"message":"llm_tool_selection_started","model":"gpt-5.4-mini"}
+{"message":"llm_tool_selection_succeeded","usage":{"totalTokens":123}}
+{"message":"llm_tool_selection_failed"}
+{"message":"deterministic_tool_selection_used","reason":"llm_error"}
+```
 
 ## Salesforce Setup Guide
 
@@ -286,7 +360,7 @@ If `/ask` is called before login, the response has `intent: "auth_required"` and
 8. Calls the MCP tool with JSON input.
 9. Formats the tool output into a short Spanish answer.
 
-If `LLM_PROVIDER=openai` and `OPENAI_API_KEY` is configured, the service uses OpenAI for tool selection with strict JSON output. If OpenAI is not configured or fails, the deterministic fallback scores available tools by matching question terms against tool names, descriptions, and input schema fields. The fallback still uses the MCP server context dynamically and returns `unsupported` if confidence is low.
+If `LLM_PROVIDER=openai` and `OPENAI_API_KEY` is configured, the service uses OpenAI `gpt-5.4-mini` by default for tool selection with strict JSON output. It logs sanitized token usage when OpenAI returns usage metadata. If OpenAI is not configured or fails, the deterministic fallback scores available tools by matching question terms against tool names, descriptions, and input schema fields. The fallback still uses the MCP server context dynamically and returns `unsupported` if confidence is low.
 
 ## MCP Transport Notes
 
@@ -337,6 +411,8 @@ Tokens, refresh tokens, client secrets, passwords, and API keys are redacted fro
 - `Salesforce OAuth refresh failed`: verify connected app settings, OAuth scopes, client id, client secret, and token URL.
 - `MCP HTTP request failed`: verify `SALESFORCE_MCP_SERVER_URL`, network access, bearer token scope, and Salesforce Hosted MCP availability.
 - `Invalid token`: confirm the token status includes `mcp_api`, the External Client App has **Issue JSON Web Token (JWT)-based access tokens for named users** enabled, and the MCP server URL is the one copied from Salesforce.
+- `llm_tool_selection_failed`: verify `OPENAI_API_KEY`, `OPENAI_MODEL`, and that the API key has `Chat completions (/v1/chat/completions): Request`.
+- No OpenAI usage appears: restart the Node process after editing `.env`, make sure Salesforce auth succeeds first, and check for `llm_tool_selection_started` in logs. `/ask` does not call OpenAI if it returns `auth_required`.
 - `MCP tools/list response did not include a tools array`: the server may use a different transport shape. Review `src/mcpClient.ts`.
 - Client cannot reach the proxy: confirm it can access the Mac local IP, disable blocking firewall rules, or use ngrok/Tailscale for controlled demos.
 
@@ -345,3 +421,7 @@ Tokens, refresh tokens, client secrets, passwords, and API keys are redacted fro
 - Salesforce OAuth Web Server Flow: https://help.salesforce.com/s/articleView?id=sf.remoteaccess_oauth_web_server_flow.htm&type=5
 - Salesforce OAuth Refresh Token Flow: https://help.salesforce.com/s/articleView?id=sf.remoteaccess_oauth_refresh_token_flow.htm&type=5
 - Salesforce OAuth JWT Bearer Flow, for comparison only: https://help.salesforce.com/s/articleView?id=sf.remoteaccess_oauth_jwt_flow.htm&type=5
+- OpenAI API Quickstart: https://developers.openai.com/api/docs/quickstart
+- OpenAI Models: https://developers.openai.com/api/docs/models
+- OpenAI API key permissions: https://help.openai.com/en/articles/8867743-assign-api-key-permissions
+- OpenAI API Platform projects: https://help.openai.com/en/articles/9186755-managing-your-work-in-the-api-platform-with-projects
