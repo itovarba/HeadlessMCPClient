@@ -98,6 +98,19 @@ export async function selectTool(params: {
       });
 
       const normalizedSelection = normalizeAndValidateSelection(llmResult.selection, tools, { question, userId, currentDate });
+      if (!normalizedSelection.toolName && config.enableDeterministicFallback) {
+        const recoveredSelection = selectWithDeterministicFallback({ question, userId, currentDate, tools });
+        if (recoveredSelection.toolName) {
+          logger?.info("llm_tool_selection_recovered_with_fallback", {
+            provider: "openai",
+            model: config.llm.openaiModel,
+            intent: recoveredSelection.intent,
+            tool: recoveredSelection.toolName
+          });
+          return recoveredSelection;
+        }
+      }
+
       const successLog: JsonObject = {
         provider: "openai",
         model: config.llm.openaiModel,
@@ -308,8 +321,34 @@ function normalizeAndValidateSelection(
   return {
     intent: safeIntent(selection.intent),
     toolName: availableTool.name,
-    toolInput: completeToolInput(availableTool, pruneToSchema(selection.toolInput ?? {}, availableTool.inputSchema ?? {}), context)
+    toolInput: stabilizeToolInput(
+      availableTool,
+      completeToolInput(availableTool, pruneToSchema(selection.toolInput ?? {}, availableTool.inputSchema ?? {}), context),
+      context
+    )
   };
+}
+
+function stabilizeToolInput(
+  tool: McpTool,
+  input: JsonObject,
+  context: { question: string; userId: string; currentDate: string }
+): JsonObject {
+  const stableInput = buildStableToolInputForQuestion(tool, context);
+  return stableInput ? { ...input, ...stableInput } : input;
+}
+
+function buildStableToolInputForQuestion(
+  tool: McpTool,
+  context: { question: string; userId: string; currentDate: string }
+): JsonObject | undefined {
+  const properties = getSchemaProperties(tool.inputSchema ?? {});
+  if (!properties || !("q" in properties) || !isClientPrioritizationQuestion(context.question)) {
+    return undefined;
+  }
+
+  const q = buildSoqlQuery(context.question, context.userId);
+  return q ? { q } : undefined;
 }
 
 function completeToolInput(
@@ -521,6 +560,17 @@ function tokenize(text: string): string[] {
     .filter((term) => term.length > 2 && !STOP_WORDS.has(term));
 }
 
+function tokenizeWithStopWords(text: string): string[] {
+  return text
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .split(/[^a-z0-9]+/)
+    .map((term) => term.trim())
+    .filter((term) => term.length > 1);
+}
+
 function expandTerms(terms: string[]): string[] {
   const expanded = new Set<string>();
   for (const term of terms) {
@@ -570,7 +620,7 @@ function toolIntentScore(questionTerms: string[], tool: McpTool): number {
 
 function buildSoqlQuery(question: string, userId: string): string | undefined {
   const terms = new Set(expandTerms(tokenize(question)));
-  const ownerFilter = buildOwnerFilter(terms, userId);
+  const ownerFilter = buildOwnerFilter(question, userId);
 
   if (hasAny(terms, ["task", "todo", "activity", "tarea", "actividad"])) {
     return `SELECT Id, Subject, Status, ActivityDate, Priority, WhatId, WhoId FROM Task WHERE ${[
@@ -604,11 +654,17 @@ function buildSoqlQuery(question: string, userId: string): string | undefined {
   return undefined;
 }
 
-function buildOwnerFilter(terms: Set<string>, userId: string): string | undefined {
+function isClientPrioritizationQuestion(question: string): boolean {
+  const terms = new Set(expandTerms(tokenize(question)));
+  return hasAny(terms, ["priority", "prioritize"]) && hasAny(terms, ["account", "customer", "client"]);
+}
+
+function buildOwnerFilter(question: string, userId: string): string | undefined {
   if (!isSalesforceId(userId)) {
     return undefined;
   }
 
+  const terms = new Set(tokenizeWithStopWords(question));
   const isSelfScoped = hasAny(terms, [
     "my",
     "mine",
