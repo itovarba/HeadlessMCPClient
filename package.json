@@ -7,9 +7,12 @@
     "node": ">=26.3.0"
   },
   "scripts": {
-    "dev": "tsx watch src/server.ts",
+    "dev": "node scripts/dev.mjs",
+    "dev:proxy": "tsx watch src/server.ts",
     "build": "tsc",
-    "start": "node dist/server.js"
+    "start": "node dist/server.js",
+    "llm:start": "OLLAMA_MODELS=.ollama-models OLLAMA_NO_CLOUD=1 OLLAMA_FLASH_ATTENTION=1 OLLAMA_KV_CACHE_TYPE=q8_0 ollama serve",
+    "llm:pull": "node scripts/pull-model.mjs"
   },
   "keywords": [
     "mcp",

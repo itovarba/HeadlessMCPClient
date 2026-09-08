@@ -7,9 +7,14 @@ export const ERROR_ANSWER =
   "Ha ocurrido un error consultando el asistente comercial. Revisa la conexión con Salesforce.";
 
 export function formatMcpResponse(raw: JsonValue): string {
+  const identityAnswer = formatUserIdentity(raw);
+  if (identityAnswer) {
+    return shortenSpeech(identityAnswer);
+  }
+
   const naturalLanguageAnswer = findNaturalLanguageAnswer(raw);
   if (naturalLanguageAnswer) {
-    return shortenSpeech(naturalLanguageAnswer);
+    return shortenSpeech(cleanNaturalLanguageAnswer(naturalLanguageAnswer));
   }
 
   if (typeof raw === "string") {
@@ -37,7 +42,7 @@ function findNaturalLanguageAnswer(value: JsonValue): string | undefined {
     if (parsed !== undefined && typeof parsed !== "string") {
       return findNaturalLanguageAnswer(parsed);
     }
-    return value;
+    return undefined;
   }
 
   if (Array.isArray(value)) {
@@ -54,13 +59,14 @@ function findNaturalLanguageAnswer(value: JsonValue): string | undefined {
     return undefined;
   }
 
-  const preferredKeys = ["answer", "summary", "message", "text", "response", "result"];
-  for (const key of preferredKeys) {
-    const item = value[key];
-    if (typeof item === "string" && item.trim()) {
+  for (const [key, item] of Object.entries(value)) {
+    if (NATURAL_LANGUAGE_KEYS.has(normalizeKey(key)) && typeof item === "string" && item.trim()) {
       return item;
     }
-    if (item !== undefined && typeof item !== "string") {
+  }
+
+  for (const item of Object.values(value)) {
+    if (item !== undefined && typeof item === "object" && item !== null) {
       const nested = findNaturalLanguageAnswer(item);
       if (nested) {
         return nested;
@@ -145,8 +151,13 @@ function summarizeBriefItem(item: JsonValue): string {
   ];
   const selected = preferredKeys
     .filter((key) => item[key] !== undefined && isDisplayPrimitive(item[key]))
-    .slice(0, 3)
-    .map((key) => String(item[key]));
+    .slice(0, 4)
+    .map((key) => `${humanizeKey(key)} ${formatDisplayValue(key, item[key] as string | number | boolean)}`);
+
+  const account = item.Account;
+  if (isJsonObject(account) && typeof account.Name === "string" && selected.length < 4) {
+    selected.push(`cuenta ${account.Name}`);
+  }
 
   if (selected.length > 0) {
     return selected.join(", ");
@@ -178,10 +189,58 @@ function isDisplayPrimitive(value: JsonValue | undefined): value is string | num
 }
 
 function humanizeKey(key: string): string {
-  return key
+  const normalized = key
     .replace(/([a-z])([A-Z])/g, "$1 $2")
     .replace(/[_-]+/g, " ")
     .toLowerCase();
+
+  return DISPLAY_LABELS[normalized] ?? normalized;
+}
+
+function formatDisplayValue(key: string, value: string | number | boolean): string {
+  if (/amount|importe/i.test(key) && typeof value === "number") {
+    return new Intl.NumberFormat("es-ES", {
+      maximumFractionDigits: 0
+    }).format(value);
+  }
+  return String(value);
+}
+
+function formatUserIdentity(value: JsonValue): string | undefined {
+  if (!isJsonObject(value) || !isJsonObject(value.identity)) {
+    return undefined;
+  }
+
+  const identity = value.identity;
+  const name = stringValue(identity.displayName) ??
+    [stringValue(identity.firstName), stringValue(identity.lastName)].filter(Boolean).join(" ");
+  const profile = stringValue(identity.profileName);
+  const company = stringValue(identity.companyName);
+
+  if (!name) {
+    return undefined;
+  }
+
+  const details = [profile, company].filter(Boolean);
+  return details.length > 0 ? `Eres ${name}, ${details.join(" de ")}.` : `Eres ${name}.`;
+}
+
+function cleanNaturalLanguageAnswer(text: string): string {
+  return text
+    .replace(/^\s*(answer|respuesta)\s*:\s*/i, "")
+    .replace(/\n+\s*(supporting context|contexto de apoyo)\s*:\s*/i, " ")
+    .replace(/\n+\s*sources?\s*:[\s\S]*$/i, "")
+    .replace(/\*\*/g, "")
+    .replace(/^[-*]\s+/gm, "")
+    .trim();
+}
+
+function normalizeKey(key: string): string {
+  return key.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function stringValue(value: JsonValue | undefined): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
 function shortenSpeech(text: string): string {
@@ -194,7 +253,7 @@ function shortenSpeech(text: string): string {
   return `${sentenceCut.trim()}.`;
 }
 
-function isJsonObject(value: JsonValue): value is JsonObject {
+function isJsonObject(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
@@ -205,3 +264,26 @@ function tryParseJson(text: string): JsonValue | undefined {
     return undefined;
   }
 }
+
+const NATURAL_LANGUAGE_KEYS = new Set([
+  "answer",
+  "summary",
+  "message",
+  "text",
+  "response",
+  "result",
+  "promptresponse",
+  "outputtext",
+  "finalanswer"
+]);
+
+const DISPLAY_LABELS: Record<string, string> = {
+  name: "nombre",
+  "stage name": "fase",
+  amount: "importe",
+  "close date": "cierre",
+  status: "estado",
+  priority: "prioridad",
+  subject: "asunto",
+  "case number": "caso"
+};

@@ -53,6 +53,36 @@ The app fails fast if mandatory Salesforce MCP, session, or OAuth variables are 
 
 OpenAI is optional but enabled by default when an API key is present. This proxy uses OpenAI only to select the best Salesforce MCP tool and build the JSON input for that tool. Salesforce authentication, MCP discovery, and MCP execution still happen directly between this local proxy and Salesforce.
 
+### Local LLM with Ollama
+
+The proxy can use a completely local OpenAI-compatible Ollama endpoint for both dynamic MCP tool selection and voice-friendly response generation. Tool names are never configured in the app: every request still uses the live `tools/list` metadata, descriptions, and input schemas returned by Salesforce.
+
+Recommended local configuration:
+
+```env
+LLM_PROVIDER=ollama
+LLM_BASE_URL=http://127.0.0.1:11434/v1
+LLM_MODEL=qwen3:1.7b-voice
+LLM_API_KEY=
+ENABLE_DETERMINISTIC_FALLBACK=true
+```
+
+Download the model once:
+
+```bash
+npm run llm:pull
+```
+
+Then start the complete development stack:
+
+```bash
+npm run dev
+```
+
+`npm run dev` starts Ollama first, waits until it is ready, checks that the model exists, and then starts the proxy watcher. When you stop the command, it stops the Ollama process that it created. It does not register a macOS login service.
+
+The model files are stored in `.ollama-models/`, which is ignored by Git. Ollama listens only on `127.0.0.1`; the iPhone calls the proxy on port 3000 and never connects to the LLM directly. If Ollama is unavailable or emits invalid JSON, the deterministic fallback remains available.
+
 Default configuration:
 
 ```env
