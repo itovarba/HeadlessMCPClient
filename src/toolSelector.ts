@@ -146,12 +146,11 @@ async function selectWithLlm(params: {
       currentDate,
       tools: tools.map((tool) => ({
         name: tool.name,
-        description: tool.description ?? "",
-        inputSchema: tool.inputSchema ?? {},
-        outputSchema: tool.outputSchema ?? {},
-        annotations: tool.annotations ?? {}
+        description: (tool.description ?? "").slice(0, 1_200),
+        inputSchema: tool.inputSchema ?? {}
       }))
-    }
+    },
+    maxTokens: 256
   });
 
   const selectionResult: LlmSelectionResult = {

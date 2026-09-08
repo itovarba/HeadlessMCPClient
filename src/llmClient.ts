@@ -27,8 +27,9 @@ export async function requestJsonCompletion(params: {
   config: AppConfig;
   systemPrompt: string;
   userPayload: JsonObject;
+  maxTokens?: number;
 }): Promise<{ value: JsonObject; usage?: LlmUsage }> {
-  const { config, systemPrompt, userPayload } = params;
+  const { config, systemPrompt, userPayload, maxTokens = 256 } = params;
   const headers: Record<string, string> = {
     "content-type": "application/json"
   };
@@ -40,9 +41,12 @@ export async function requestJsonCompletion(params: {
   const response = await fetch(`${config.llm.baseUrl}/chat/completions`, {
     method: "POST",
     headers,
+    signal: AbortSignal.timeout(config.llm.timeoutMs),
     body: JSON.stringify({
       model: config.llm.model,
       temperature: 0,
+      max_tokens: maxTokens,
+      stream: false,
       response_format: { type: "json_object" },
       messages: [
         { role: "system", content: systemPrompt },

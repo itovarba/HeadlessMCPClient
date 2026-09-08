@@ -3,7 +3,7 @@ import path from "node:path";
 
 export const ollamaBinary = "/opt/homebrew/bin/ollama";
 export const ollamaUrl = "http://127.0.0.1:11434";
-export const modelName = "qwen3:4b-instruct";
+export const modelName = "qwen3:1.7b-voice";
 
 export function ollamaEnvironment({ allowDownloads = false } = {}) {
   return {
@@ -11,6 +11,9 @@ export function ollamaEnvironment({ allowDownloads = false } = {}) {
     OLLAMA_MODELS: path.join(process.cwd(), ".ollama-models"),
     OLLAMA_FLASH_ATTENTION: "1",
     OLLAMA_KV_CACHE_TYPE: "q8_0",
+    OLLAMA_CONTEXT_LENGTH: "4096",
+    OLLAMA_KEEP_ALIVE: "-1",
+    OLLAMA_NUM_PARALLEL: "1",
     OLLAMA_MAX_TRANSFER_STREAMS: "1",
     ...(allowDownloads ? {} : { OLLAMA_NO_CLOUD: "1" })
   };

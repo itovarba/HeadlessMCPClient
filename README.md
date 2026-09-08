@@ -62,7 +62,7 @@ Recommended local configuration:
 ```env
 LLM_PROVIDER=ollama
 LLM_BASE_URL=http://127.0.0.1:11434/v1
-LLM_MODEL=qwen3:4b-instruct
+LLM_MODEL=qwen3:1.7b-voice
 LLM_API_KEY=
 ENABLE_DETERMINISTIC_FALLBACK=true
 ```

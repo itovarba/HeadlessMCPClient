@@ -14,9 +14,11 @@ import { renderDashboard } from "./dashboard.js";
 import { SalesforceMcpClient } from "./mcpClient.js";
 import { ERROR_ANSWER, UNSUPPORTED_ANSWER } from "./responseFormatter.js";
 import { selectTool } from "./toolSelector.js";
-import type { AskRequest, AskResponse, JsonObject, JsonValue, Logger } from "./types.js";
+import type { AskRequest, AskResponse, JsonObject, JsonValue, Logger, McpTool } from "./types.js";
 
 const app = express();
+const TOOL_CACHE_TTL_MS = 30_000;
+const toolCache = new Map<string, { expiresAt: number; tools: McpTool[] }>();
 
 app.use(express.json({ limit: "1mb" }));
 app.set("trust proxy", 1);
@@ -200,7 +202,7 @@ app.post("/ask", async (request: Request<unknown, AskResponse, AskRequest>, resp
 
     await mcpClient.connect();
 
-    const tools = await mcpClient.listTools();
+    const tools = await listToolsWithCache(mcpClient, appUserId);
     logger.info("mcp_tools_discovered", {
       count: tools.length
     });
@@ -393,4 +395,19 @@ function buildLocalAuthUrl(request: { protocol: string; get(name: string): strin
   const url = new URL(`${protocol}://${host}/auth/login`);
   url.searchParams.set("userId", userId);
   return url.toString();
+}
+
+async function listToolsWithCache(mcpClient: SalesforceMcpClient, userId: string): Promise<McpTool[]> {
+  const cached = toolCache.get(userId);
+  if (cached && cached.expiresAt > Date.now()) {
+    logger.info("mcp_tools_cache_hit", { userId, count: cached.tools.length });
+    return cached.tools;
+  }
+
+  const tools = await mcpClient.listTools();
+  toolCache.set(userId, {
+    tools,
+    expiresAt: Date.now() + TOOL_CACHE_TTL_MS
+  });
+  return tools;
 }

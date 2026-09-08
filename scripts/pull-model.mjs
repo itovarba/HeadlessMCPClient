@@ -7,7 +7,7 @@ import {
   ollamaEnvironment
 } from "./ollama-runtime.mjs";
 
-const sourceModel = "hf.co/Qwen/Qwen3-4B-GGUF:Q4_K_M";
+const sourceModel = "hf.co/ggml-org/Qwen3-1.7B-GGUF:Q4_K_M";
 let ollamaProcess;
 
 try {

@@ -24,7 +24,7 @@ export async function generateVoiceAnswer(params: {
 }): Promise<string> {
   const { question, selection, raw, config, logger } = params;
 
-  if (config.llm.provider === "none") {
+  if (config.llm.provider === "none" || !config.llm.generateAnswers) {
     return formatMcpResponse(raw);
   }
 
@@ -43,7 +43,8 @@ export async function generateVoiceAnswer(params: {
         intent: selection.intent,
         toolName: selection.toolName,
         toolResult: limitPayload(raw)
-      }
+      },
+      maxTokens: 160
     });
     const answer = result.value.answer;
     if (typeof answer !== "string" || !answer.trim()) {

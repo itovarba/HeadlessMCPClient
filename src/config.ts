@@ -25,6 +25,8 @@ export interface AppConfig {
     apiKey?: string;
     model: string;
     baseUrl: string;
+    generateAnswers: boolean;
+    timeoutMs: number;
   };
   enableDeterministicFallback: boolean;
 }
@@ -49,6 +51,16 @@ function readPort(): number {
     throw new Error("PORT must be a valid TCP port number.");
   }
   return port;
+}
+
+function readPositiveInteger(name: string, defaultValue: number): number {
+  const raw = readOptional(name);
+  if (!raw) return defaultValue;
+  const value = Number.parseInt(raw, 10);
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new Error(`${name} must be a positive integer.`);
+  }
+  return value;
 }
 
 function readBoolean(name: string, defaultValue: boolean): boolean {
@@ -130,14 +142,16 @@ function buildConfig(): AppConfig {
 
   const llmProvider = readLlmProvider();
   const defaultBaseUrl = llmProvider === "ollama" ? "http://127.0.0.1:11434/v1" : "https://api.openai.com/v1";
-  const defaultModel = llmProvider === "ollama" ? "qwen3:4b-instruct" : "gpt-5.4-mini";
+  const defaultModel = llmProvider === "ollama" ? "qwen3:1.7b-voice" : "gpt-5.4-mini";
   const llmBaseUrl = readOptional("LLM_BASE_URL") ?? defaultBaseUrl;
   assertUrl(llmBaseUrl, "LLM_BASE_URL");
 
   const llmConfig: AppConfig["llm"] = {
     provider: llmProvider,
     model: readOptional("LLM_MODEL") ?? readOptional("OPENAI_MODEL") ?? defaultModel,
-    baseUrl: llmBaseUrl.replace(/\/$/, "")
+    baseUrl: llmBaseUrl.replace(/\/$/, ""),
+    generateAnswers: readBoolean("LLM_GENERATE_ANSWERS", false),
+    timeoutMs: readPositiveInteger("LLM_TIMEOUT_MS", 12_000)
   };
 
   const apiKey = readOptional("LLM_API_KEY") ?? readOptional("OPENAI_API_KEY");
