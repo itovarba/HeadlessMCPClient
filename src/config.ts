@@ -3,7 +3,7 @@ import dotenv from "dotenv";
 dotenv.config();
 
 export type SalesforceAuthType = "oauth";
-export type LlmProvider = "openai" | "none";
+export type LlmProvider = "openai" | "ollama" | "none";
 
 export interface AppConfig {
   port: number;
@@ -22,8 +22,9 @@ export interface AppConfig {
   defaultUserId: string;
   llm: {
     provider: LlmProvider;
-    openaiApiKey?: string;
-    openaiModel: string;
+    apiKey?: string;
+    model: string;
+    baseUrl: string;
   };
   enableDeterministicFallback: boolean;
 }
@@ -71,10 +72,10 @@ function assertUrl(value: string, name: string): void {
 
 function readLlmProvider(): LlmProvider {
   const provider = (readOptional("LLM_PROVIDER") ?? "openai").toLowerCase();
-  if (provider === "openai" || provider === "none") {
+  if (provider === "openai" || provider === "ollama" || provider === "none") {
     return provider;
   }
-  throw new Error("LLM_PROVIDER must be either openai or none.");
+  throw new Error("LLM_PROVIDER must be openai, ollama, or none.");
 }
 
 function readAuthType(): SalesforceAuthType {
@@ -127,14 +128,21 @@ function buildConfig(): AppConfig {
     salesforceConfig.accessToken = accessToken;
   }
 
+  const llmProvider = readLlmProvider();
+  const defaultBaseUrl = llmProvider === "ollama" ? "http://127.0.0.1:11434/v1" : "https://api.openai.com/v1";
+  const defaultModel = llmProvider === "ollama" ? "qwen3:4b-instruct" : "gpt-5.4-mini";
+  const llmBaseUrl = readOptional("LLM_BASE_URL") ?? defaultBaseUrl;
+  assertUrl(llmBaseUrl, "LLM_BASE_URL");
+
   const llmConfig: AppConfig["llm"] = {
-    provider: readLlmProvider(),
-    openaiModel: readOptional("OPENAI_MODEL") ?? "gpt-5.4-mini"
+    provider: llmProvider,
+    model: readOptional("LLM_MODEL") ?? readOptional("OPENAI_MODEL") ?? defaultModel,
+    baseUrl: llmBaseUrl.replace(/\/$/, "")
   };
 
-  const openaiApiKey = readOptional("OPENAI_API_KEY");
-  if (openaiApiKey) {
-    llmConfig.openaiApiKey = openaiApiKey;
+  const apiKey = readOptional("LLM_API_KEY") ?? readOptional("OPENAI_API_KEY");
+  if (apiKey) {
+    llmConfig.apiKey = apiKey;
   }
 
   return {

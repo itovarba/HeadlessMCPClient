@@ -1,4 +1,5 @@
 import type { AppConfig } from "./config.js";
+import { requestJsonCompletion, type LlmUsage } from "./llmClient.js";
 import type { JsonObject, JsonValue, Logger, McpTool, ToolSelection } from "./types.js";
 
 const TOOL_SELECTOR_SYSTEM_PROMPT = `You are a dynamic MCP tool selection layer for a Headless 360 assistant.
@@ -38,31 +39,9 @@ Return format:
   "toolInput": {}
 }`;
 
-interface OpenAiChatResponse {
-  choices?: Array<{
-    message?: {
-      content?: string;
-    };
-  }>;
-  usage?: {
-    prompt_tokens?: number;
-    completion_tokens?: number;
-    total_tokens?: number;
-  };
-  error?: {
-    message?: string;
-  };
-}
-
-interface OpenAiUsage {
-  promptTokens?: number;
-  completionTokens?: number;
-  totalTokens?: number;
-}
-
-interface OpenAiSelectionResult {
+interface LlmSelectionResult {
   selection: ToolSelection;
-  usage?: OpenAiUsage;
+  usage?: LlmUsage;
 }
 
 export async function selectTool(params: {
@@ -79,17 +58,20 @@ export async function selectTool(params: {
     return unsupportedSelection();
   }
 
-  let fallbackReason = "openai_not_configured";
+  let fallbackReason = "llm_not_configured";
 
-  if (config.llm.provider === "openai" && config.llm.openaiApiKey) {
+  const canUseLlm = config.llm.provider === "ollama" ||
+    (config.llm.provider === "openai" && Boolean(config.llm.apiKey));
+
+  if (canUseLlm) {
     try {
       logger?.info("llm_tool_selection_started", {
-        provider: "openai",
-        model: config.llm.openaiModel,
-        endpoint: "/v1/chat/completions"
+        provider: config.llm.provider,
+        model: config.llm.model,
+        endpoint: `${config.llm.baseUrl}/chat/completions`
       });
 
-      const llmResult = await selectWithOpenAi({
+      const llmResult = await selectWithLlm({
         question,
         userId,
         currentDate,
@@ -102,8 +84,8 @@ export async function selectTool(params: {
         const recoveredSelection = selectWithDeterministicFallback({ question, userId, currentDate, tools });
         if (recoveredSelection.toolName) {
           logger?.info("llm_tool_selection_recovered_with_fallback", {
-            provider: "openai",
-            model: config.llm.openaiModel,
+            provider: config.llm.provider,
+            model: config.llm.model,
             intent: recoveredSelection.intent,
             tool: recoveredSelection.toolName
           });
@@ -112,8 +94,8 @@ export async function selectTool(params: {
       }
 
       const successLog: JsonObject = {
-        provider: "openai",
-        model: config.llm.openaiModel,
+        provider: config.llm.provider,
+        model: config.llm.model,
         intent: normalizedSelection.intent,
         tool: normalizedSelection.toolName
       };
@@ -133,7 +115,7 @@ export async function selectTool(params: {
     }
   } else if (config.llm.provider === "none") {
     fallbackReason = "provider_disabled";
-  } else if (!config.llm.openaiApiKey) {
+  } else if (config.llm.provider === "openai" && !config.llm.apiKey) {
     fallbackReason = "api_key_missing";
   }
 
@@ -147,118 +129,38 @@ export async function selectTool(params: {
   return unsupportedSelection();
 }
 
-async function selectWithOpenAi(params: {
+async function selectWithLlm(params: {
   question: string;
   userId: string;
   currentDate: string;
   tools: McpTool[];
   config: AppConfig;
-}): Promise<OpenAiSelectionResult> {
+}): Promise<LlmSelectionResult> {
   const { question, userId, currentDate, tools, config } = params;
-  const body = {
-    model: config.llm.openaiModel,
-    temperature: 0,
-    response_format: {
-      type: "json_object"
-    },
-    messages: [
-      {
-        role: "system",
-        content: TOOL_SELECTOR_SYSTEM_PROMPT
-      },
-      {
-        role: "user",
-        content: JSON.stringify(
-          {
-            question,
-            userId,
-            currentDate,
-            tools: tools.map((tool) => ({
-              name: tool.name,
-              description: tool.description ?? "",
-              inputSchema: tool.inputSchema ?? {},
-              outputSchema: tool.outputSchema ?? {},
-              annotations: tool.annotations ?? {}
-            }))
-          },
-          null,
-          2
-        )
-      }
-    ]
-  };
-
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${config.llm.openaiApiKey}`,
-      "content-type": "application/json"
-    },
-    body: JSON.stringify(body)
+  const result = await requestJsonCompletion({
+    config,
+    systemPrompt: TOOL_SELECTOR_SYSTEM_PROMPT,
+    userPayload: {
+      question,
+      userId,
+      currentDate,
+      tools: tools.map((tool) => ({
+        name: tool.name,
+        description: tool.description ?? "",
+        inputSchema: tool.inputSchema ?? {},
+        outputSchema: tool.outputSchema ?? {},
+        annotations: tool.annotations ?? {}
+      }))
+    }
   });
 
-  const payload = (await response.json().catch(() => ({}))) as OpenAiChatResponse;
-  if (!response.ok) {
-    throw new Error(payload.error?.message ?? `OpenAI request failed with status ${response.status}`);
-  }
-
-  const content = payload.choices?.[0]?.message?.content;
-  if (!content) {
-    throw new Error("OpenAI response did not include message content.");
-  }
-
-  const result: OpenAiSelectionResult = {
-    selection: parseOpenAiSelection(content)
+  const selectionResult: LlmSelectionResult = {
+    selection: result.value as unknown as ToolSelection
   };
-  const usage = normalizeOpenAiUsage(payload.usage);
-  if (usage) {
-    result.usage = usage;
+  if (result.usage) {
+    selectionResult.usage = result.usage;
   }
-
-  return result;
-}
-
-function parseOpenAiSelection(content: string): ToolSelection {
-  const jsonText = extractJsonObject(content);
-  const parsed = JSON.parse(jsonText) as unknown;
-  if (!isJsonObject(parsed)) {
-    throw new Error("OpenAI response was not a JSON object.");
-  }
-
-  return parsed as unknown as ToolSelection;
-}
-
-function extractJsonObject(content: string): string {
-  const trimmed = content.trim();
-  const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
-  const candidate = (fenced?.[1] ?? trimmed).trim();
-  const start = candidate.indexOf("{");
-  const end = candidate.lastIndexOf("}");
-
-  if (start === -1 || end === -1 || end < start) {
-    throw new Error("OpenAI response did not contain a JSON object.");
-  }
-
-  return candidate.slice(start, end + 1);
-}
-
-function normalizeOpenAiUsage(usage: OpenAiChatResponse["usage"]): OpenAiUsage | undefined {
-  if (!usage) {
-    return undefined;
-  }
-
-  const normalized: OpenAiUsage = {};
-  if (typeof usage.prompt_tokens === "number") {
-    normalized.promptTokens = usage.prompt_tokens;
-  }
-  if (typeof usage.completion_tokens === "number") {
-    normalized.completionTokens = usage.completion_tokens;
-  }
-  if (typeof usage.total_tokens === "number") {
-    normalized.totalTokens = usage.total_tokens;
-  }
-
-  return Object.keys(normalized).length > 0 ? normalized : undefined;
+  return selectionResult;
 }
 
 function selectWithDeterministicFallback(params: {
@@ -405,7 +307,7 @@ function buildFlowStyleInput(
   for (const fieldName of Object.keys(itemProperties)) {
     const normalized = normalizeToken(fieldName);
     if (matchesAny(normalized, ["userquestion", "question", "prompt", "query", "request", "text"])) {
-      item[fieldName] = context.question;
+      item[fieldName] = buildVoiceFriendlyQuestion(fieldName, context.question);
     } else if (matchesAny(normalized, ["userid", "user", "owner"])) {
       item[fieldName] = context.userId;
     } else if (matchesAny(normalized, ["date", "today", "currentdate"])) {
@@ -593,22 +495,33 @@ function toolIntentScore(questionTerms: string[], tool: McpTool): number {
   const isWriteTool = /create|update|delete|upsert|modify|write/.test(name);
   const hasWriteIntent = questionTerms.some((term) => WRITE_TERMS.has(term));
   const hasReadObjectIntent = questionTerms.some((term) => SALESFORCE_OBJECT_TERMS.has(term));
-  const hasSuccessCaseIntent = questionTerms.some((term) => SUCCESS_CASE_TERMS.has(term));
+  const hasSuccessCaseIntent =
+    questionTerms.some((term) => SUCCESS_TERMS.has(term)) ||
+    (questionTerms.includes("ntt") && questionTerms.includes("data"));
+  const hasUserInfoIntent = questionTerms.some((term) => USER_INFO_TERMS.has(term));
 
   if (isWriteTool && !hasWriteIntent) {
     return -0.55;
   }
 
   if (name.includes("soql") && hasReadObjectIntent) {
-    return 0.35;
+    return 0.55;
   }
 
   if ((name.includes("success") || description.includes("success cases")) && hasSuccessCaseIntent) {
-    return 0.45;
+    return 0.85;
   }
 
-  if (name.includes("userinfo") && questionTerms.some((term) => USER_INFO_TERMS.has(term))) {
-    return 0.35;
+  if ((name.includes("success") || description.includes("success cases")) && !hasSuccessCaseIntent) {
+    return -0.6;
+  }
+
+  if (name.includes("userinfo") && hasUserInfoIntent) {
+    return 0.75;
+  }
+
+  if (name.includes("userinfo") && !hasUserInfoIntent) {
+    return -0.25;
   }
 
   if (name.includes("relatedrecords") && !questionTerms.some((term) => RELATIONSHIP_TERMS.has(term))) {
@@ -623,17 +536,27 @@ function buildSoqlQuery(question: string, userId: string): string | undefined {
   const ownerFilter = buildOwnerFilter(question, userId);
 
   if (hasAny(terms, ["task", "todo", "activity", "tarea", "actividad"])) {
+    const dateFilter = inferTaskDateFilter(terms);
     return `SELECT Id, Subject, Status, ActivityDate, Priority, WhatId, WhoId FROM Task WHERE ${[
       ownerFilter,
-      "Status != 'Completed'"
+      "Status != 'Completed'",
+      dateFilter
     ].filter(Boolean).join(" AND ")} ORDER BY ActivityDate ASC LIMIT 10`;
   }
 
   if (hasAny(terms, ["opportunity", "pipeline", "oportunidad", "deal"])) {
+    const statusFilter = hasAny(terms, ["closed", "cerrada", "cerradas", "cerrado", "cerrados"])
+      ? "IsClosed = true"
+      : "IsClosed = false";
+    const dateFilter = inferOpportunityDateFilter(terms);
+    const orderBy = hasAny(terms, ["largest", "biggest", "mayor", "mayores", "importe", "amount"])
+      ? "Amount DESC NULLS LAST"
+      : "CloseDate ASC";
     return `SELECT Id, Name, StageName, Amount, CloseDate, Account.Name FROM Opportunity WHERE ${[
       ownerFilter,
-      "IsClosed = false"
-    ].filter(Boolean).join(" AND ")} ORDER BY CloseDate ASC LIMIT 10`;
+      statusFilter,
+      dateFilter
+    ].filter(Boolean).join(" AND ")} ORDER BY ${orderBy} LIMIT 10`;
   }
 
   if (hasAny(terms, ["contact", "contacto"])) {
@@ -736,9 +659,48 @@ function hasAny(terms: Set<string>, candidates: string[]): boolean {
 }
 
 function inferIntent(question: string): string {
-  const terms = tokenize(question);
-  const firstTerms = terms.slice(0, 3);
+  const terms = new Set(expandTerms(tokenize(question)));
+
+  if (hasAny(terms, ["success", "exito"]) || (terms.has("ntt") && terms.has("data"))) {
+    return "get_success_cases";
+  }
+  if (hasAny(terms, ["user", "usuario", "perfil", "profile", "manager", "role", "rol"])) {
+    return "get_user_info";
+  }
+  if (hasAny(terms, ["opportunity", "pipeline", "oportunidad", "deal"])) {
+    if (hasAny(terms, ["closed", "cerrada", "cerradas", "cerrado", "cerrados"])) return "list_closed_opportunities";
+    if (hasAny(terms, ["largest", "biggest", "mayor", "mayores", "importe", "amount"])) return "rank_opportunities_by_amount";
+    return "list_open_opportunities";
+  }
+  if (hasAny(terms, ["task", "todo", "activity", "tarea", "actividad"])) return "list_pending_tasks";
+  if (hasAny(terms, ["contact", "contacto"])) return "list_contacts";
+  if (hasAny(terms, ["account", "customer", "client", "cuenta", "cliente"])) return "list_accounts";
+  if (hasAny(terms, ["case", "ticket", "caso"])) return "list_salesforce_cases";
+
+  const firstTerms = [...terms].slice(0, 3);
   return safeIntent(firstTerms.join("_") || "detected_intent");
+}
+
+function buildVoiceFriendlyQuestion(fieldName: string, question: string): string {
+  if (normalizeToken(fieldName) !== "userquestion") {
+    return question;
+  }
+
+  return `Responde en español, de forma breve y apta para ser leída por Siri. Pregunta: ${question}`;
+}
+
+function inferTaskDateFilter(terms: Set<string>): string | undefined {
+  if (hasAny(terms, ["today", "hoy"])) return "ActivityDate = TODAY";
+  if (hasAny(terms, ["overdue", "vencida", "vencidas", "atrasada", "atrasadas"])) return "ActivityDate < TODAY";
+  if (hasAny(terms, ["week", "semana"])) return "ActivityDate = THIS_WEEK";
+  return undefined;
+}
+
+function inferOpportunityDateFilter(terms: Set<string>): string | undefined {
+  if (hasAny(terms, ["today", "hoy"])) return "CloseDate = TODAY";
+  if (hasAny(terms, ["month", "mes"])) return "CloseDate = THIS_MONTH";
+  if (hasAny(terms, ["overdue", "vencida", "vencidas", "atrasada", "atrasadas"])) return "CloseDate < TODAY";
+  return undefined;
 }
 
 function safeIntent(intent: string | undefined): string {
@@ -877,7 +839,7 @@ const SALESFORCE_OBJECT_TERMS = new Set([
   "casos"
 ]);
 
-const SUCCESS_CASE_TERMS = new Set(["success", "exito", "case", "cases", "caso", "casos", "ntt", "data"]);
+const SUCCESS_TERMS = new Set(["success", "successful", "exito", "exitos"]);
 const USER_INFO_TERMS = new Set(["user", "usuario", "perfil", "profile", "manager", "role", "rol"]);
 const RELATIONSHIP_TERMS = new Set(["related", "relationship", "relacion", "relacionados", "contacts", "opportunities", "cases"]);
 const WRITE_TERMS = new Set(["create", "crear", "update", "actualizar", "modificar", "delete", "borrar", "eliminar", "change", "cambiar"]);

@@ -1,5 +1,6 @@
 import express, { type Request, type Response } from "express";
 import session from "express-session";
+import { generateVoiceAnswer } from "./answerGenerator.js";
 import {
   AuthRequiredError,
   clearSalesforceOAuth,
@@ -11,7 +12,7 @@ import {
 import { config } from "./config.js";
 import { renderDashboard } from "./dashboard.js";
 import { SalesforceMcpClient } from "./mcpClient.js";
-import { ERROR_ANSWER, formatMcpResponse, UNSUPPORTED_ANSWER } from "./responseFormatter.js";
+import { ERROR_ANSWER, UNSUPPORTED_ANSWER } from "./responseFormatter.js";
 import { selectTool } from "./toolSelector.js";
 import type { AskRequest, AskResponse, JsonObject, JsonValue, Logger } from "./types.js";
 
@@ -238,8 +239,16 @@ app.post("/ask", async (request: Request<unknown, AskResponse, AskRequest>, resp
       result: sanitizeForLog(raw)
     });
 
+    const answer = await generateVoiceAnswer({
+      question,
+      selection,
+      raw,
+      config,
+      logger
+    });
+
     response.json({
-      answer: formatMcpResponse(raw),
+      answer,
       intent: selection.intent,
       tool: selection.toolName,
       raw
