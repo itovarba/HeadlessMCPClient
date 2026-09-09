@@ -28,6 +28,11 @@ export interface AppConfig {
     generateAnswers: boolean;
     timeoutMs: number;
   };
+  conversation: {
+    ttlMs: number;
+    maxTurns: number;
+    maxSessions: number;
+  };
   enableDeterministicFallback: boolean;
 }
 
@@ -165,6 +170,11 @@ function buildConfig(): AppConfig {
     salesforce: salesforceConfig,
     defaultUserId: readOptional("DEFAULT_USER_ID") ?? "iosu.demo",
     llm: llmConfig,
+    conversation: {
+      ttlMs: readPositiveInteger("CONVERSATION_TTL_MS", 10 * 60 * 1_000),
+      maxTurns: readPositiveInteger("CONVERSATION_MAX_TURNS", 6),
+      maxSessions: readPositiveInteger("CONVERSATION_MAX_SESSIONS", 100)
+    },
     enableDeterministicFallback: readBoolean("ENABLE_DETERMINISTIC_FALLBACK", true)
   };
 }

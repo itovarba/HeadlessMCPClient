@@ -7,7 +7,9 @@ export interface JsonObject {
 
 export interface AskRequest {
   userId?: string;
+  conversationId?: string;
   question?: string;
+  resetConversation?: boolean;
 }
 
 export interface AskResponse {
@@ -15,6 +17,22 @@ export interface AskResponse {
   intent: string;
   tool: string | null;
   raw: JsonValue;
+  conversationId?: string;
+}
+
+export interface ConversationTurn {
+  question: string;
+  intent: string;
+  toolName: string;
+  toolInput: JsonObject;
+  answer: string;
+  result: JsonValue;
+  createdAt: string;
+}
+
+export interface ConversationContext {
+  conversationId: string;
+  turns: ConversationTurn[];
 }
 
 export interface McpTool {

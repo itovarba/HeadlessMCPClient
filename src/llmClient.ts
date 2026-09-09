@@ -49,7 +49,10 @@ export async function requestJsonCompletion(params: {
       stream: false,
       response_format: { type: "json_object" },
       messages: [
-        { role: "system", content: systemPrompt },
+        {
+          role: "system",
+          content: config.llm.provider === "ollama" ? `/no_think\n${systemPrompt}` : systemPrompt
+        },
         { role: "user", content: JSON.stringify(userPayload) }
       ]
     })

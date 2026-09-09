@@ -4,6 +4,38 @@ Local Headless 360 MCP proxy for a configurable Salesforce Hosted MCP Server. Th
 
 It does not hardcode Salesforce tool names or business capabilities. Tool selection uses `listTools()`, tool names, descriptions, input schemas, and available output.
 
+## Conversational context
+
+`POST /ask` supports short multi-turn conversations. Send the same `conversationId` on every iteration of the Siri shortcut so follow-ups can reuse earlier questions, selected tools, record IDs, and results:
+
+```json
+{
+  "userId": "iosu.demo",
+  "conversationId": "siri-2026-09-08-001",
+  "question": "Dime mis oportunidades abiertas"
+}
+```
+
+The next call can then contain a follow-up such as `¿Y las cerradas?` or `Háblame de la primera`. Context is isolated by `userId + conversationId`, held only in process memory, limited to the latest turns, and expires after inactivity. Configure it with `CONVERSATION_TTL_MS`, `CONVERSATION_MAX_TURNS`, and `CONVERSATION_MAX_SESSIONS`.
+
+Write follow-ups can also reuse a record returned by the previous turn. For example:
+
+```text
+Dime las tareas que tengo pendientes
+Ok, cierra la tarea de llamar a Rose
+```
+
+If the previous result contains one matching Task, the proxy passes its Salesforce `00T...` Id to a dynamically discovered update tool and requests `Status: Completed`. If no unique record can be identified, it does not execute the write and asks the user to specify the task.
+
+At the beginning of a new Siri interaction, generate a new `conversationId` or send `resetConversation: true` in its first `/ask` request. You can also clear it explicitly:
+
+```http
+POST /conversation/reset
+Content-Type: application/json
+
+{"userId":"iosu.demo","conversationId":"siri-2026-09-08-001"}
+```
+
 ## Requirements
 
 - Node.js 26.3 or newer

@@ -70,6 +70,10 @@ export class SalesforceMcpClient {
       arguments: payload
     })) as CallToolResult;
 
+    if (result.isError) {
+      throw new Error(`MCP tool ${toolName} failed: ${extractToolErrorMessage(result)}`);
+    }
+
     if (result.structuredContent !== undefined) {
       return result.structuredContent;
     }
@@ -181,6 +185,15 @@ export class SalesforceMcpClient {
       result: parsed
     };
   }
+}
+
+function extractToolErrorMessage(result: CallToolResult): string {
+  const text = result.content
+    ?.filter((item): item is { text: string } => typeof item.text === "string")
+    .map((item) => item.text.trim())
+    .filter(Boolean)
+    .join(" ");
+  return text ? previewText(text) : "Unknown tool execution error";
 }
 
 function previewText(text: string): string {

@@ -10,15 +10,21 @@ import {
   handleSalesforceOAuthCallback
 } from "./auth.js";
 import { config } from "./config.js";
+import { ConversationStore, normalizeConversationId } from "./conversationStore.js";
 import { renderDashboard } from "./dashboard.js";
 import { SalesforceMcpClient } from "./mcpClient.js";
 import { ERROR_ANSWER, UNSUPPORTED_ANSWER } from "./responseFormatter.js";
 import { selectTool } from "./toolSelector.js";
-import type { AskRequest, AskResponse, JsonObject, JsonValue, Logger, McpTool } from "./types.js";
+import type { AskRequest, AskResponse, ConversationTurn, JsonObject, JsonValue, Logger, McpTool } from "./types.js";
 
 const app = express();
 const TOOL_CACHE_TTL_MS = 30_000;
 const toolCache = new Map<string, { expiresAt: number; tools: McpTool[] }>();
+const conversationStore = new ConversationStore(
+  config.conversation.ttlMs,
+  config.conversation.maxTurns,
+  config.conversation.maxSessions
+);
 
 app.use(express.json({ limit: "1mb" }));
 app.set("trust proxy", 1);
@@ -116,6 +122,7 @@ app.get("/auth/status", (request: Request, response: Response) => {
 app.post("/auth/logout", (request: Request<unknown, JsonObject, { userId?: string }>, response: Response) => {
   const userId = request.body.userId?.trim() || request.session.userId || config.defaultUserId;
   clearSalesforceOAuth({ userId, session: request.session });
+  conversationStore.clearUser(userId);
   response.json({
     status: "ok",
     userId
@@ -172,6 +179,7 @@ app.get("/mcp/tools", async (request: Request, response: Response) => {
 
 app.post("/ask", async (request: Request<unknown, AskResponse, AskRequest>, response: Response<AskResponse>) => {
   const appUserId = request.body.userId?.trim() || config.defaultUserId;
+  const conversationId = normalizeConversationId(request.body.conversationId);
 
   try {
     const question = request.body.question?.trim();
@@ -186,8 +194,33 @@ app.post("/ask", async (request: Request<unknown, AskResponse, AskRequest>, resp
       return;
     }
 
+    if (request.body.resetConversation) {
+      conversationStore.clear(appUserId, conversationId);
+    }
+
+    const conversation = conversationStore.get(appUserId, conversationId);
+    const duplicateTurn = findRecentDuplicateTurn(conversation.turns, question);
+    if (duplicateTurn) {
+      logger.warn("duplicate_question_reused", {
+        userId: appUserId,
+        conversationId,
+        intent: duplicateTurn.intent,
+        tool: duplicateTurn.toolName
+      });
+      response.json({
+        answer: duplicateTurn.answer,
+        intent: duplicateTurn.intent,
+        tool: duplicateTurn.toolName,
+        raw: duplicateTurn.result,
+        conversationId
+      });
+      return;
+    }
+
     logger.info("incoming_question", {
       userId: appUserId,
+      conversationId,
+      contextTurns: conversation.turns.length,
       question
     });
 
@@ -212,6 +245,7 @@ app.post("/ask", async (request: Request<unknown, AskResponse, AskRequest>, resp
       userId: salesforceUserId,
       currentDate: new Date().toISOString().slice(0, 10),
       tools,
+      conversation,
       config,
       logger
     });
@@ -222,9 +256,12 @@ app.post("/ask", async (request: Request<unknown, AskResponse, AskRequest>, resp
     });
 
     if (!selection.toolName) {
+      const isAmbiguousReference = selection.intent === "ambiguous_reference";
       response.json({
-        answer: UNSUPPORTED_ANSWER,
-        intent: "unsupported",
+        answer: isAmbiguousReference
+          ? "No puedo identificar una única tarea con ese nombre. Dime el asunto exacto o cuál de las tareas quieres cerrar."
+          : UNSUPPORTED_ANSWER,
+        intent: isAmbiguousReference ? selection.intent : "unsupported",
         tool: null,
         raw: {}
       });
@@ -241,6 +278,21 @@ app.post("/ask", async (request: Request<unknown, AskResponse, AskRequest>, resp
       result: sanitizeForLog(raw)
     });
 
+    if (isToolErrorResult(raw)) {
+      logger.warn("mcp_tool_result_rejected_from_context", {
+        tool: selection.toolName,
+        error: extractToolErrorCode(raw) ?? "unknown_tool_error"
+      });
+      response.json({
+        answer: "Salesforce no ha podido ejecutar esa consulta. No guardaré este resultado en la conversación.",
+        intent: "tool_error",
+        tool: selection.toolName,
+        raw,
+        conversationId
+      });
+      return;
+    }
+
     const answer = await generateVoiceAnswer({
       question,
       selection,
@@ -249,11 +301,23 @@ app.post("/ask", async (request: Request<unknown, AskResponse, AskRequest>, resp
       logger
     });
 
+    const turn: ConversationTurn = {
+      question,
+      intent: selection.intent,
+      toolName: selection.toolName,
+      toolInput: selection.toolInput,
+      answer,
+      result: raw,
+      createdAt: new Date().toISOString()
+    };
+    conversationStore.addTurn(appUserId, conversationId, turn);
+
     response.json({
       answer,
       intent: selection.intent,
       tool: selection.toolName,
-      raw
+      raw,
+      conversationId
     });
   } catch (error) {
     if (error instanceof AuthRequiredError) {
@@ -280,6 +344,16 @@ app.post("/ask", async (request: Request<unknown, AskResponse, AskRequest>, resp
     });
   }
 });
+
+app.post(
+  "/conversation/reset",
+  (request: Request<unknown, JsonObject, { userId?: string; conversationId?: string }>, response: Response) => {
+    const userId = request.body.userId?.trim() || config.defaultUserId;
+    const conversationId = normalizeConversationId(request.body.conversationId);
+    const cleared = conversationStore.clear(userId, conversationId);
+    response.json({ status: "ok", userId, conversationId, cleared });
+  }
+);
 
 app.listen(config.port, () => {
   logger.info("server_started", {
@@ -369,6 +443,42 @@ function isJsonObject(value: JsonValue): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function isToolErrorResult(value: JsonValue): boolean {
+  if (Array.isArray(value)) {
+    return value.some(isToolErrorResult);
+  }
+  if (!isJsonObject(value)) return false;
+
+  if (typeof value.errorCode === "string" || value.isError === true || value.success === false) {
+    return true;
+  }
+  if (Array.isArray(value.errors) && value.errors.length > 0) {
+    return true;
+  }
+  return Object.values(value).some((item) =>
+    typeof item === "object" && item !== null ? isToolErrorResult(item) : false
+  );
+}
+
+function extractToolErrorCode(value: JsonValue): string | undefined {
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const code = extractToolErrorCode(item);
+      if (code) return code;
+    }
+    return undefined;
+  }
+  if (!isJsonObject(value)) return undefined;
+  if (typeof value.errorCode === "string") return value.errorCode;
+  for (const item of Object.values(value)) {
+    if (typeof item === "object" && item !== null) {
+      const code = extractToolErrorCode(item);
+      if (code) return code;
+    }
+  }
+  return undefined;
+}
+
 function buildErrorDiagnostic(error: unknown): JsonObject {
   const message = error instanceof Error ? error.message : "Unknown error";
   return {
@@ -395,6 +505,23 @@ function buildLocalAuthUrl(request: { protocol: string; get(name: string): strin
   const url = new URL(`${protocol}://${host}/auth/login`);
   url.searchParams.set("userId", userId);
   return url.toString();
+}
+
+function findRecentDuplicateTurn(turns: ConversationTurn[], question: string): ConversationTurn | undefined {
+  const previous = turns.at(-1);
+  if (!previous) return undefined;
+  const createdAt = Date.parse(previous.createdAt);
+  if (!Number.isFinite(createdAt) || Date.now() - createdAt > 15_000) return undefined;
+  return normalizeQuestion(previous.question) === normalizeQuestion(question) ? previous : undefined;
+}
+
+function normalizeQuestion(question: string): string {
+  return question
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
 }
 
 async function listToolsWithCache(mcpClient: SalesforceMcpClient, userId: string): Promise<McpTool[]> {

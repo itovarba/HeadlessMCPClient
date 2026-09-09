@@ -147,6 +147,9 @@ function summarizeBriefItem(item: JsonValue): string {
     "Amount",
     "amount",
     "ActivityDate",
+    "StartDateTime",
+    "EndDateTime",
+    "Location",
     "CloseDate"
   ];
   const selected = preferredKeys
@@ -285,5 +288,8 @@ const DISPLAY_LABELS: Record<string, string> = {
   status: "estado",
   priority: "prioridad",
   subject: "asunto",
-  "case number": "caso"
+  "case number": "caso",
+  "start date time": "inicio",
+  "end date time": "fin",
+  location: "ubicación"
 };
